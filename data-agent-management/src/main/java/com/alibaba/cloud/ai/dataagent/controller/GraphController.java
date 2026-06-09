@@ -55,6 +55,7 @@ public class GraphController {
 		response.getHeaders().add("Connection", "keep-alive");
 		response.getHeaders().add("Access-Control-Allow-Origin", "*");
 
+		// 【SSE 出口】手动可写的广播站；GraphServiceImpl 通过 tryEmitNext 往里推数据
 		Sinks.Many<ServerSentEvent<GraphNodeResponse>> sink = Sinks.many().unicast().onBackpressureBuffer();
 
 		GraphRequest request = GraphRequest.builder()
@@ -66,8 +67,10 @@ public class GraphController {
 			.rejectedPlan(rejectedPlan)
 			.nl2sqlOnly(nl2sqlOnly)
 			.build();
+		// 异步启动图执行（内部 subscribe 消费 compiledGraph.stream，再 tryEmitNext 写入 sink）
 		graphService.graphStreamProcess(sink, request);
 
+		// 【SSE 消费端】Spring 订阅此 Flux 后向客户端推流；filter/doOnCancel 为旁路逻辑，不改变数据
 		return sink.asFlux().filter(sse -> {
 			// 1. 如果 event 是 "complete" 或 "error"，直接放行（不管 text 是否为空）
 			if (STREAM_EVENT_COMPLETE.equals(sse.event()) || STREAM_EVENT_ERROR.equals(sse.event())) {

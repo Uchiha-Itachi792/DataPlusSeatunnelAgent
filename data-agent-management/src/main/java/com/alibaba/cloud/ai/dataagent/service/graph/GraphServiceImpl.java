@@ -44,6 +44,16 @@ import java.util.concurrent.ExecutorService;
 
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.*;
 
+/**
+ * 流式 SSE 链路（两条 Flux，方向相反）：
+ * <ol>
+ * <li><b>图执行流</b>：{@code compiledGraph.stream()} 生产 {@code NodeOutput} →
+ * {@link #subscribeToFlux} 里 subscribe 消费 → {@link #handleNodeOutput} 转发</li>
+ * <li><b>前端 SSE 流</b>：{@code sink.tryEmitNext()} 生产事件 → Controller 返回的
+ * {@code sink.asFlux()} 由 Spring/浏览器消费</li>
+ * </ol>
+ * Reactor 规则：Flux 懒执行，调用 {@code subscribe()} 后上游才开始跑。
+ */
 @Slf4j
 @Service
 public class GraphServiceImpl implements GraphService {
@@ -69,6 +79,7 @@ public class GraphServiceImpl implements GraphService {
 
 	@Override
 	public String nl2sql(String naturalQuery, String agentId) throws GraphRunnerException {
+		// 同步路径：invoke 阻塞直到图跑完，无 Flux/subscribe（对比 graphStreamProcess 流式路径）
 		OverAllState state = compiledGraph
 			.invoke(Map.of(IS_ONLY_NL2SQL, true, INPUT_KEY, naturalQuery, AGENT_ID, agentId),
 					RunnableConfig.builder().build())
@@ -82,7 +93,7 @@ public class GraphServiceImpl implements GraphService {
 			graphRequest.setThreadId(UUID.randomUUID().toString());
 		}
 		String threadId = graphRequest.getThreadId();
-		// 创建或获取 StreamContext
+		// 绑定 Controller 创建的 sink（SSE 出口）；后续 handleNodeOutput 通过 tryEmitNext 往里写
 		StreamContext context = streamContextMap.computeIfAbsent(threadId, k -> new StreamContext());
 		context.setSink(sink);
 		if (StringUtils.hasText(graphRequest.getHumanFeedbackContent())) {
@@ -136,13 +147,16 @@ public class GraphServiceImpl implements GraphService {
 		// 开始 Langfuse 追踪
 		Span span = langfuseReporter.startLLMSpan("graph-stream", graphRequest);
 		context.setSpan(span);
-
+		// 构建(如果是第二轮，就是获取)多轮对话上下文
 		String multiTurnContext = multiTurnContextManager.buildContext(threadId);
+		// 开始新一轮对话
 		multiTurnContextManager.beginTurn(threadId, query);
+		// 【生产端-图】创建图执行流；此处仅定义管道，尚未真正跑图（需 subscribe 才启动）
 		Flux<NodeOutput> nodeOutputFlux = compiledGraph.stream(
 				Map.of(IS_ONLY_NL2SQL, nl2sqlOnly, INPUT_KEY, query, AGENT_ID, agentId, HUMAN_REVIEW_ENABLED,
 						humanReviewEnabled, MULTI_TURN_CONTEXT, multiTurnContext, TRACE_THREAD_ID, threadId),
 				RunnableConfig.builder().threadId(threadId).build());
+		// 【消费端-图】订阅后 Graph 从 START 依次执行各 Node，产出陆续进入 onNext 回调
 		subscribeToFlux(context, nodeOutputFlux, graphRequest, agentId, threadId);
 	}
 
@@ -186,6 +200,7 @@ public class GraphServiceImpl implements GraphService {
 			.addMetadata(RunnableConfig.HUMAN_FEEDBACK_METADATA_KEY, feedbackData)
 			.build();
 
+		// 人工反馈：stream(null, resumeConfig) 从 HumanFeedback 检查点恢复，而非从头 START
 		Flux<NodeOutput> nodeOutputFlux = compiledGraph.stream(null, resumeConfig);
 		subscribeToFlux(context, nodeOutputFlux, graphRequest, agentId, threadId);
 	}
@@ -200,16 +215,22 @@ public class GraphServiceImpl implements GraphService {
 	 */
 	private void subscribeToFlux(StreamContext context, Flux<NodeOutput> nodeOutputFlux, GraphRequest graphRequest,
 			String agentId, String threadId) {
+		// 放到独立线程 subscribe，避免阻塞 Controller 返回 Flux 给 Spring
 		CompletableFuture.runAsync(() -> {
 			// 在订阅之前检查上下文是否仍然有效
 			if (context.isCleaned()) {
 				log.debug("StreamContext cleaned before subscription for threadId: {}", threadId);
 				return;
 			}
-			Disposable disposable = nodeOutputFlux.subscribe(output -> handleNodeOutput(graphRequest, output),
+			// subscribe = 消费 nodeOutputFlux；同时触发 compiledGraph 开始执行
+			Disposable disposable = nodeOutputFlux.subscribe(
+					// onNext：每收到一块 NodeOutput（含 LLM 流式 chunk）就处理并转发到 SSE sink
+					output -> handleNodeOutput(graphRequest, output),
+					// onError：图执行异常
 					error -> handleStreamError(agentId, threadId, error),
+					// onComplete：整图跑完（或中断点暂停前的本轮结束）
 					() -> handleStreamComplete(agentId, threadId));
-			// 原子性地设置 Disposable，如果已经清理则立即释放
+			// Disposable：订阅句柄；dispose() 可取消图执行（见 StreamContext.cleanup / stopStreamProcessing）
 			synchronized (context) {
 				if (context.isCleaned()) {
 					// 如果已经清理，立即释放刚创建的 Disposable
@@ -264,6 +285,7 @@ public class GraphServiceImpl implements GraphService {
 				langfuseReporter.endSpanSuccess(context.getSpan(), threadId, context.getCollectedOutput());
 			}
 			if (context.getSink() != null && context.getSink().currentSubscriberCount() > 0) {
+				// 通知前端本轮结束，并关闭 SSE 流（触发 Controller 侧 doOnComplete）
 				context.getSink()
 					.tryEmitNext(ServerSentEvent.builder(GraphNodeResponse.complete(agentId, threadId))
 						.event(STREAM_EVENT_COMPLETE)
@@ -275,7 +297,7 @@ public class GraphServiceImpl implements GraphService {
 	}
 
 	/**
-	 * 处理节点输出
+	 * 消费图执行流中的一条输出；仅 StreamingOutput（流式文本 chunk）会转发到前端。
 	 */
 	private void handleNodeOutput(GraphRequest request, NodeOutput output) {
 		log.debug("Received output: {}", output.getClass().getSimpleName());
@@ -331,7 +353,7 @@ public class GraphServiceImpl implements GraphService {
 				.text(chunk)
 				.textType(textType)
 				.build();
-			// 检查发送是否成功，如果失败说明客户端已断开
+			// 【生产端-SSE】写入 Controller 的 sink → sink.asFlux() → 浏览器 SSE 客户端
 			Sinks.EmitResult result = context.getSink().tryEmitNext(ServerSentEvent.builder(response).build());
 			if (result.isFailure()) {
 				log.warn("Failed to emit data to sink for threadId: {}, result: {}. Stopping stream processing.",
