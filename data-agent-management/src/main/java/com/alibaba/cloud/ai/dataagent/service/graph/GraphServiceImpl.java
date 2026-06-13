@@ -306,15 +306,23 @@ public class GraphServiceImpl implements GraphService {
 		}
 	}
 
+	/**
+	 * 将图节点流式 chunk 适配为前端 SSE 事件。
+	 * <p>
+	 * 不能直接把 {@code output.chunk()} 原样推给前端，因为：LLM 流里夹杂 {@code $$$sql} 等类型标记、
+	 * 前端需要 {@code nodeName}/{@code textType} 选择渲染组件，且需顺带写入 Langfuse 与多轮历史。
+	 */
 	private void handleStreamNodeOutput(GraphRequest request, StreamingOutput output) {
 		String threadId = request.getThreadId();
 		StreamContext context = streamContextMap.get(threadId);
-		// 检查是否已经停止处理
+		// 用户断连或 stopStreamProcessing 后 context 已移除，丢弃迟到的 chunk
 		if (context == null || context.getSink() == null) {
 			log.debug("Stream processing already stopped for threadId: {}, skipping output", threadId);
 			return;
 		}
+		// 产出该 chunk 的节点名（如 PlannerNode、ReportGeneratorNode）
 		String node = output.node();
+		// LLM 流式输出的一小段文本（可能含类型标记，也可能为正文）
 		String chunk = output.chunk();
 		log.debug("Received Stream output: {}", chunk);
 
@@ -322,11 +330,13 @@ public class GraphServiceImpl implements GraphService {
 			return;
 		}
 
-		// 如果是文本标记符号，则更新文本类型
+		// --- 解析 TextType：根据 $$$sql / $$$json / $$$ 等标记判断当前 chunk 的内容类型 ---
 		TextType originType = context.getTextType();
 		TextType textType;
+		// 当前 chunk 是否为类型标记本身（标记只用于切换类型，不展示给用户）
 		boolean isTypeSign = false;
 		if (originType == null) {
+			// 本轮第一个 chunk：尝试识别起始标记（如 $$$sql → SQL 类型）
 			textType = TextType.getTypeByStratSign(chunk);
 			if (textType != TextType.TEXT) {
 				isTypeSign = true;
@@ -334,18 +344,23 @@ public class GraphServiceImpl implements GraphService {
 			context.setTextType(textType);
 		}
 		else {
+			// 已有类型：检测结束标记 $$$ 或新的起始标记，更新 context 中的当前类型
 			textType = TextType.getType(originType, chunk);
 			if (textType != originType) {
 				isTypeSign = true;
 			}
 			context.setTextType(textType);
 		}
-		// 文本标记符号不返回给前端
+
+		// 标记符 chunk 不推前端；正文 chunk 才包装为 GraphNodeResponse 并写入 SSE
 		if (!isTypeSign) {
+			// Langfuse：累积本轮完整输出用于追踪上报
 			context.appendOutput(chunk);
+			// 多轮对话：仅收集 Planner 流式计划，finishTurn 时写入历史
 			if (PlannerNode.class.getSimpleName().equals(node)) {
 				multiTurnContextManager.appendPlannerChunk(threadId, chunk);
 			}
+			// 前端协议：除 text 外还需 nodeName（按节点分组）和 textType（代码块/Markdown/表格等）
 			GraphNodeResponse response = GraphNodeResponse.builder()
 				.agentId(request.getAgentId())
 				.threadId(threadId)
@@ -353,12 +368,12 @@ public class GraphServiceImpl implements GraphService {
 				.text(chunk)
 				.textType(textType)
 				.build();
-			// 【生产端-SSE】写入 Controller 的 sink → sink.asFlux() → 浏览器 SSE 客户端
+			// 【生产端-SSE】写入 Controller 的 sink → sink.asFlux() → 浏览器
 			Sinks.EmitResult result = context.getSink().tryEmitNext(ServerSentEvent.builder(response).build());
 			if (result.isFailure()) {
+				// sink 无订阅者或已终止，说明客户端已断开，停止图执行避免浪费 LLM/DB 资源
 				log.warn("Failed to emit data to sink for threadId: {}, result: {}. Stopping stream processing.",
 						threadId, result);
-				// 如果发送失败，停止处理
 				stopStreamProcessing(threadId);
 			}
 		}

@@ -78,4 +78,6 @@ logging:
     com.alibaba.cloud.ai.dataagent.workflow.node: debug
     com.alibaba.cloud.ai.mapper: debug
     org.springframework.jdbc: debug
+    com.alibaba.cloud.ai.dataagent.aop: info   # NodeEntryLoggingAspect
+    com.alibaba.cloud.ai.dataagent.service.graph: debug
 
