@@ -39,32 +39,47 @@ public class DynamicFilterService {
 
 	private final BusinessKnowledgeMapper businessKnowledgeMapper;
 
+	/**
+	 * 构建向量检索用的 metadata 过滤表达式。
+	 * <p>
+	 * 始终追加 {@code agentId} 与 {@code vectorType} 两个基础条件。当 {@code vectorType} 为
+	 * {@link DocumentMetadataConstant#AGENT_KNOWLEDGE} 或 {@link DocumentMetadataConstant#BUSINESS_TERM} 时，
+	 * 会从 MySQL 查询该 Agent 下 {@code is_recall = 1} 且未删除的记录 ID，并以 IN 条件加入白名单过滤；
+	 * 其他类型仅使用上述两个基础条件。
+	 * </p>
+	 * <p>
+	 * 本方法只构造 {@link Filter.Expression}，不访问向量库；由
+	 * {@link AgentVectorStoreServiceImpl#search} 等调用方传入向量库后再执行相似度检索。
+	 * </p>
+	 * @param agentId 智能体 ID
+	 * @param vectorType 文档向量类型，见 {@link DocumentMetadataConstant}
+	 * @return 用 AND 组合后的过滤表达式；若无有效召回 ID 则返回 {@code null}，调用方应直接返回空结果
+	 */
 	public Filter.Expression buildDynamicFilter(String agentId, String vectorType) {
 		FilterExpressionBuilder b = new FilterExpressionBuilder();
 		List<Filter.Expression> conditions = new ArrayList<>();
 
-		// 必须条件
+		// 基础条件：限定当前 Agent 与向量类型，避免跨 Agent / 跨类型串数据
 		conditions.add(b.eq(Constant.AGENT_ID, agentId).build());
 		conditions.add(b.eq(DocumentMetadataConstant.VECTOR_TYPE, vectorType).build());
 
 		switch (vectorType) {
 
 			case DocumentMetadataConstant.AGENT_KNOWLEDGE:
-				// 场景 A: 知识库文档 -> 需要查 MySQL 获取启用状态
+				// 从 MySQL 查询 is_recall=1 且未删除的智能体知识 ID 白名单
 				List<Integer> validIds = agentKnowledgeMapper.selectRecalledKnowledgeIds(Integer.valueOf(agentId));
 
 				if (validIds.isEmpty()) {
 					log.warn("Agent {} has no recalled knowledge documents. Returning empty filter signal.", agentId);
 					return null;
 				}
-				else {
-					// 加入 ID 过滤
-					conditions.add(b.in(DocumentMetadataConstant.DB_AGENT_KNOWLEDGE_ID, validIds.toArray()).build());
-				}
+				// 构造 metadata 白名单：agentKnowledgeId IN (validIds...)
+				// 向量入库时 metadata 会写入 agentKnowledgeId，检索阶段据此排除未启用/不应召回的文档
+				conditions.add(b.in(DocumentMetadataConstant.DB_AGENT_KNOWLEDGE_ID, validIds.toArray()).build());
 				break;
 
 			case DocumentMetadataConstant.BUSINESS_TERM:
-				// 场景 B: 业务知识 -> 查 business_knowledge 表的需要召回的
+				// 从 MySQL 查询 is_recall=1 且未删除的业务术语 ID 白名单
 				List<Long> recalledBusinessKnowledgeIds = businessKnowledgeMapper
 					.selectRecalledKnowledgeIds(Long.valueOf(agentId));
 
@@ -72,21 +87,21 @@ public class DynamicFilterService {
 					log.warn("Agent {} has no recalled business terms. Returning empty filter signal.", agentId);
 					return null;
 				}
-				else {
-					// 添加 ID 过滤
-					conditions
-						.add(b.in(DocumentMetadataConstant.DB_BUSINESS_TERM_ID, recalledBusinessKnowledgeIds.toArray())
-							.build());
-				}
+				// 构造 metadata 白名单：businessTermId IN (recalledBusinessKnowledgeIds...)
+				// b.in() 仅生成 Filter.Expression（等价于 SQL 的 IN），不查向量库；
+				// 实际过滤在 AgentVectorStoreServiceImpl#search 中，由 VectorStore 按 metadata 匹配后再做相似度检索
+				conditions
+					.add(b.in(DocumentMetadataConstant.DB_BUSINESS_TERM_ID, recalledBusinessKnowledgeIds.toArray())
+						.build());
 				break;
 
 			default:
-				// 其他类型，默认只用 agentId + vectorType 过滤，不做额外处理
+				// 其他 vectorType（如 table/column）仅依赖 agentId + vectorType，不再追加 ID 白名单
 				log.debug("Using default filter for type: {}", vectorType);
 				break;
 		}
 
-		// 组合所有条件
+		// 将上述条件用 AND 组合为单一 Filter.Expression，供向量检索传入
 		return combineWithAnd(conditions);
 	}
 

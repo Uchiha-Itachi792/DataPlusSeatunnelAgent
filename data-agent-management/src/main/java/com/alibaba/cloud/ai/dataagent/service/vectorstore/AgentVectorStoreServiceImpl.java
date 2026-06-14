@@ -73,11 +73,13 @@ public class AgentVectorStoreServiceImpl implements AgentVectorStoreService {
 			return Collections.emptyList();
 		}
 
+		// 组装检索请求：query/topK/threshold 决定语义召回范围，filterExpression 限定 metadata 白名单
+		// HybridSearchRequest 统一承载纯向量与混合检索参数，后续按配置走 hybrid 或 toVectorSearchRequest()
 		HybridSearchRequest hybridRequest = HybridSearchRequest.builder()
-			.query(searchRequest.getQuery())
-			.topK(searchRequest.getTopK())
-			.similarityThreshold(searchRequest.getSimilarityThreshold())
-			.filterExpression(filter)
+			.query(searchRequest.getQuery()) // 用户问题，用于 embedding 相似度匹配
+			.topK(searchRequest.getTopK()) // 最多返回文档数
+			.similarityThreshold(searchRequest.getSimilarityThreshold()) // 相似度下限，低于阈值的文档被丢弃
+			.filterExpression(filter) // buildDynamicFilter 生成的 metadata 过滤条件
 			.build();
 
 		if (dataAgentProperties.getVectorStore().isEnableHybridSearch() && hybridRetrievalStrategy.isPresent()) {
