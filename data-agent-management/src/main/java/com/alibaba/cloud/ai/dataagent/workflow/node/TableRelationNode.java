@@ -63,13 +63,29 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
 /**
- * Table relationship inference node that automatically completes complex structures like
- * JOINs and foreign keys.
+ * 表关系推断节点，位于 {@code SchemaRecallNode} 之后。
  *
  * <p>
- * This node is responsible for: - Inferring relationships between tables and fields -
- * Building initial schema from documents - Processing schema selection based on input and
- * evidence - Handling schema advice for missing information
+ * 将向量召回的表/列 Document 组装为结构化 {@link SchemaDTO}，合并物理外键与数据源配置的逻辑外键，
+ * 再调用 LLM（{@link Nl2SqlService#fineSelect}）按用户问题与 Evidence 精筛相关表，
+ * 最终写入 {@code TABLE_RELATION_OUTPUT}，供 SqlGenerate、Planner、FeasibilityAssessment 等下游节点使用。
+ *
+ * <p>
+ * 主要职责：
+ * <ul>
+ * <li>从召回 Document 构建初始 Schema，并按外键补拉缺失的关联表</li>
+ * <li>合并数据源级逻辑外键，辅助 JOIN 推断</li>
+ * <li>LLM 精筛表（支持 SQL 生成失败后的 schema 补建议重试）</li>
+ * <li>按最终表名加载语义模型，生成 {@code GENEGRATED_SEMANTIC_MODEL_PROMPT}</li>
+ * </ul>
+ *
+ * <p>
+ * State 输入：{@code TABLE_DOCUMENTS_FOR_SCHEMA_OUTPUT}、{@code COLUMN_DOCUMENTS__FOR_SCHEMA_OUTPUT}、
+ * {@code EVIDENCE}、{@code AGENT_ID}、canonical query；可选 {@code SQL_GENERATE_SCHEMA_MISSING_ADVICE}。
+ * <br>
+ * State 输出：{@code TABLE_RELATION_OUTPUT}、{@code DB_DIALECT_TYPE}、
+ * {@code GENEGRATED_SEMANTIC_MODEL_PROMPT}、{@code TABLE_RELATION_RETRY_COUNT}、
+ * {@code TABLE_RELATION_EXCEPTION_OUTPUT}。
  *
  * @author zhangshenghang
  */
@@ -90,10 +106,19 @@ public class TableRelationNode implements NodeAction {
 
 	private final AgentDatasourceService agentDatasourceService;
 
+	/**
+	 * 执行表关系推断与 Schema 精筛。
+	 *
+	 * <p>
+	 * 同步阶段完成初始 Schema 组装；异步流式阶段调用 LLM 选表并在完成后写入 resultMap。
+	 * {@code DB_DIALECT_TYPE} 等字段需立即返回，以便后续节点在 generator 完成前即可读取方言信息。
+	 * @param state 图状态，含 SchemaRecall 产出的表/列 Document 及上游上下文
+	 * @return 含流式 generator 与立即可用的 state 更新项
+	 */
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
 
-		// Get necessary input parameters
+		// --- 1. 读取上游输入 ---
 		String canonicalQuery = StateUtil.getCanonicalQuery(state);
 
 		String evidence = StateUtil.getStringValue(state, EVIDENCE);
@@ -101,7 +126,7 @@ public class TableRelationNode implements NodeAction {
 		List<Document> columnDocuments = StateUtil.getDocumentList(state, COLUMN_DOCUMENTS__FOR_SCHEMA_OUTPUT);
 		String agentIdStr = StateUtil.getStringValue(state, AGENT_ID);
 
-		// Execute business logic first - get final result immediately
+		// --- 2. 同步构建初始 Schema（含逻辑外键） ---
 		DbConfigBO agentDbConfig = databaseUtil.getAgentDbConfig(Long.valueOf(agentIdStr));
 
 		List<String> logicalForeignKeys = getLogicalForeignKeys(Long.valueOf(agentIdStr), tableDocuments);
@@ -111,29 +136,27 @@ public class TableRelationNode implements NodeAction {
 				logicalForeignKeys);
 
 		Map<String, Object> resultMap = new HashMap<>();
-		// 将 DB_DIALECT_TYPE 添加到 resultMap，确保它在 generator 完成时被写入 state
+		// generator 完成时一次性写入 state；DB_DIALECT_TYPE 同时也在 return 中立即暴露
 		resultMap.put(DB_DIALECT_TYPE, agentDbConfig.getDialectType());
 		resultMap.put(TABLE_RELATION_RETRY_COUNT, 0);
 		resultMap.put(TABLE_RELATION_EXCEPTION_OUTPUT, "");
 
+		// --- 3. 异步 LLM 精筛表，完成后写入 TABLE_RELATION_OUTPUT 与语义模型 prompt ---
 		Flux<ChatResponse> schemaFlux = processSchemaSelection(initialSchema, canonicalQuery, evidence, state,
 				agentDbConfig, result -> {
 					log.info("[{}] Schema processing result: {}", this.getClass().getSimpleName(), result);
 					resultMap.put(TABLE_RELATION_OUTPUT, result);
 
-					// 从最终的SchemaDTO中获取表名列表
 					List<String> tableNames = result.getTable().stream().map(TableDTO::getName).toList();
 
-					// 根据agentId和表名列表获取语义模型
 					List<SemanticModel> semanticModels = semanticModelService
 						.getByAgentIdAndTableNames(Long.valueOf(agentIdStr), tableNames);
 
-					// 构建语义模型提示并存储到resultMap中
 					String semanticModelPrompt = buildSemanticModelPrompt(semanticModels);
 					resultMap.put(GENEGRATED_SEMANTIC_MODEL_PROMPT, semanticModelPrompt);
 				});
 
-		// Create display stream for user experience only
+		// --- 4. 组装前端展示流（进度文案 + LLM 选表流） ---
 		Flux<ChatResponse> preFlux = Flux.create(emitter -> {
 			emitter.next(ChatResponseUtil.createResponse("开始构建初始Schema..."));
 			emitter.next(ChatResponseUtil.createResponse("初始Schema构建完成."));
@@ -145,28 +168,31 @@ public class TableRelationNode implements NodeAction {
 			emitter.complete();
 		}));
 
-		// Use utility class to create generator, directly return business logic computed
-		// result
 		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(this.getClass(),
 				state, v -> resultMap, displayFlux);
 
-		// Return generator and essential state values that need to be available
-		// immediately
-		// DB_DIALECT_TYPE must be returned directly so it's available in state for
-		// subsequent nodes
 		return Map.of(TABLE_RELATION_OUTPUT, generator, DB_DIALECT_TYPE, agentDbConfig.getDialectType(),
 				TABLE_RELATION_RETRY_COUNT, 0, TABLE_RELATION_EXCEPTION_OUTPUT, "");
 	}
 
-	/** Builds initial schema from column and table documents. */
+	/**
+	 * 将召回的表/列 Document 转为初始 {@link SchemaDTO}，并合并逻辑外键。
+	 * @param agentId Agent ID
+	 * @param columnDocuments 召回的列 Document 列表
+	 * @param tableDocuments 召回的表 Document 列表
+	 * @param agentDbConfig Agent 绑定的数据库配置
+	 * @param logicalForeignKeys 与召回表相关的逻辑外键（格式 {@code 源表.源列=目标表.目标列}）
+	 * @return 候选 Schema，尚未经 LLM 精筛
+	 */
 	private SchemaDTO buildInitialSchema(String agentId, List<Document> columnDocuments, List<Document> tableDocuments,
 			DbConfigBO agentDbConfig, List<String> logicalForeignKeys) {
 		SchemaDTO schemaDTO = new SchemaDTO();
 
 		schemaService.extractDatabaseName(schemaDTO, agentDbConfig);
+		// buildSchemaFromDocuments 会按物理外键补拉缺失的关联表/列
 		schemaService.buildSchemaFromDocuments(agentId, columnDocuments, tableDocuments, schemaDTO);
 
-		// 将逻辑外键信息合并到 schemaDTO 的 foreignKeys 字段
+		// 合并数据源配置的逻辑外键（无物理 FK 时仍可用于 JOIN 推断）
 		if (logicalForeignKeys != null && !logicalForeignKeys.isEmpty()) {
 			List<String> existingForeignKeys = schemaDTO.getForeignKeys();
 			if (existingForeignKeys == null || existingForeignKeys.isEmpty()) {
@@ -185,7 +211,16 @@ public class TableRelationNode implements NodeAction {
 		return schemaDTO;
 	}
 
-	/** Processes schema selection based on input, evidence, and optional advice. */
+	/**
+	 * 调用 LLM 对候选 Schema 做精筛，可选地根据 SQL 生成阶段的缺表建议补选表。
+	 * @param schemaDTO 初始候选 Schema，方法内会原地删除未被选中的表
+	 * @param input 规范化后的用户问题
+	 * @param evidence 业务知识 Evidence
+	 * @param state 图状态，用于读取 {@code SQL_GENERATE_SCHEMA_MISSING_ADVICE}
+	 * @param agentDbConfig 数据库配置
+	 * @param dtoConsumer LLM 选表完成后的回调，接收精筛后的 SchemaDTO
+	 * @return 含进度提示与 LLM 流式响应的 Flux
+	 */
 	private Flux<ChatResponse> processSchemaSelection(SchemaDTO schemaDTO, String input, String evidence,
 			OverAllState state, DbConfigBO agentDbConfig, Consumer<SchemaDTO> dtoConsumer) {
 		String schemaAdvice = StateUtil.getStringValue(state, SQL_GENERATE_SCHEMA_MISSING_ADVICE, null);
@@ -208,7 +243,12 @@ public class TableRelationNode implements NodeAction {
 					ChatResponseUtil.createResponse("\n\n选择数据表完成。")));
 	}
 
-	/** 获取逻辑外键信息，并过滤只保留与当前召回表相关的外键 */
+	/**
+	 * 查询 Agent 当前数据源的逻辑外键，并过滤出与召回表相关的外键。
+	 * @param agentId Agent ID
+	 * @param tableDocuments SchemaRecall 召回的表 Document，用于提取表名白名单
+	 * @return 格式化外键列表，元素形如 {@code orders.id=order_items.order_id}；异常或无数据源时返回空列表
+	 */
 	private List<String> getLogicalForeignKeys(Long agentId, List<Document> tableDocuments) {
 		try {
 			// 获取当前 agent 激活的数据源

@@ -34,7 +34,27 @@ import java.util.Map;
 
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.*;
 
-// 可行性评估节点，看需求是 数据分析/需要澄清 或者最终确认为自由闲聊
+/**
+ * 可行性评估节点，位于 {@code TableRelationNode} 之后。
+ *
+ * <p>
+ * 在已召回 Schema、Evidence 和多轮上下文的前提下，调用 LLM 判断用户请求是否可被数据分析链路回答。
+ * Prompt 模板见 {@code prompts/feasibility-assessment.txt}，输出三类需求类型之一：
+ * <ul>
+ * <li>《数据分析》— Schema/Evidence 能覆盖问题，{@link com.alibaba.cloud.ai.dataagent.workflow.dispatcher.FeasibilityAssessmentDispatcher}
+ * 路由至 {@code PlannerNode}</li>
+ * <li>《需要澄清》— 关键信息缺失或概念模糊，生成反问后图结束（{@code END}）</li>
+ * <li>《自由闲聊》— Schema 为空且与业务无关，礼貌拒绝后图结束</li>
+ * </ul>
+ *
+ * <p>
+ * 与 {@code IntentRecognitionNode} 的分工：Intent 在无 Schema 阶段做粗分流；本节点在 Schema 就绪后做细粒度可行性判断。
+ *
+ * <p>
+ * State 输入：canonical query、{@code TABLE_RELATION_OUTPUT}、{@code EVIDENCE}、{@code MULTI_TURN_CONTEXT}。
+ * <br>
+ * State 输出：{@code FEASIBILITY_ASSESSMENT_NODE_OUTPUT}（含【需求类型】【语种类型】【需求内容】）。
+ */
 @Slf4j
 @Component
 @AllArgsConstructor
@@ -42,6 +62,11 @@ public class FeasibilityAssessmentNode implements NodeAction {
 
 	private final LlmService llmService;
 
+	/**
+	 * 执行可行性评估：组装 prompt → 流式调用 LLM → 将评估结果写入 state。
+	 * @param state 图状态，含精筛后的 Schema 及上游上下文
+	 * @return 含流式 generator 的 state 更新项，key 为 {@code FEASIBILITY_ASSESSMENT_NODE_OUTPUT}
+	 */
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
 		// 获取canonical_query
@@ -63,6 +88,7 @@ public class FeasibilityAssessmentNode implements NodeAction {
 		// 调用LLM进行可行性评估
 		Flux<ChatResponse> responseFlux = llmService.callUser(prompt);
 
+		// LLM 流结束后将完整评估文本写入 FEASIBILITY_ASSESSMENT_NODE_OUTPUT，供 Dispatcher 解析【需求类型】
 		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(this.getClass(),
 				state, "正在进行可行性评估...", "可行性评估完成！", llmOutput -> {
 					// 获取评估结果
