@@ -643,22 +643,19 @@
           const saveNodeMessage = (node: GraphNodeResponse[]): Promise<void> => {
             if (!node || !node.length) return Promise.resolve();
 
-            // 特殊处理RESULT_SET节点
+            // 特殊处理 RESULT_SET：统一保存为 result-set，供 ResultSetDisplay 渲染（table / 图表均适用）
             if (node.length > 0 && node[0].textType === TextType.RESULT_SET) {
               try {
-                const resultData: ResultData = JSON.parse(node[0].text);
-                // 如果type不是table，保存一个特殊的标记，以便在历史消息中能够正确显示
-                if (resultData.displayStyle?.type && resultData.displayStyle?.type !== 'table') {
-                  const aiMessage: ChatMessage = {
-                    sessionId,
-                    role: 'assistant',
-                    content: node[0].text, // 保存原始JSON数据
-                    messageType: 'result-set', // 使用特殊的messageType
-                  };
-                  return ChatService.saveMessage(sessionId, aiMessage).catch(error => {
-                    console.error('保存AI消息失败:', error);
-                  });
-                }
+                JSON.parse(node[0].text);
+                const aiMessage: ChatMessage = {
+                  sessionId,
+                  role: 'assistant',
+                  content: node[0].text,
+                  messageType: 'result-set',
+                };
+                return ChatService.saveMessage(sessionId, aiMessage).catch(error => {
+                  console.error('保存AI消息失败:', error);
+                });
               } catch (error) {
                 console.error('解析结果集JSON失败:', error);
               }
@@ -1810,9 +1807,10 @@
 </style>
 
 <style>
-  /* 结果集表格样式 */
+  /* 结果集表格样式（v-html 渲染，需非 scoped；文字色勿依赖继承，避免暗色模式下白字白底） */
   .result-set-container {
-    background: white;
+    background: #ffffff;
+    color: #303133;
     border: 1px solid #e8e8e8;
     border-radius: 8px;
     overflow: hidden;
@@ -1823,6 +1821,7 @@
     background: #f8f9fa;
     padding: 12px 16px;
     border-bottom: 1px solid #e8e8e8;
+    color: #303133;
   }
 
   .result-set-info {
@@ -1906,6 +1905,8 @@
     max-width: 200px;
     overflow: hidden;
     text-overflow: ellipsis;
+    color: #303133;
+    background: #ffffff;
   }
 
   .result-set-table tr:hover {
@@ -1938,6 +1939,48 @@
 
   .result-set-message {
     width: 100%;
+    color: #303133;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .result-set-container {
+      background: #1f2937;
+      color: #e5e7eb;
+      border-color: #374151;
+    }
+
+    .result-set-header {
+      background: #111827;
+      border-bottom-color: #374151;
+      color: #e5e7eb;
+    }
+
+    .result-set-info,
+    .result-set-pagination-info {
+      color: #d1d5db;
+    }
+
+    .result-set-table th {
+      background: #374151;
+      color: #f3f4f6;
+      border-bottom-color: #4b5563;
+    }
+
+    .result-set-table td {
+      color: #e5e7eb;
+      background: #1f2937;
+      border-bottom-color: #374151;
+    }
+
+    .result-set-table tr:hover {
+      background: #374151;
+    }
+
+    .result-set-pagination-btn {
+      background: #374151;
+      color: #e5e7eb;
+      border-color: #4b5563;
+    }
   }
 
   /* 响应式设计 */

@@ -201,15 +201,16 @@ public class SqlExecuteNode implements NodeAction {
 	}
 
 	/**
-	 * 调用大模型获取图表配置信息并填充到ResultSetBO中
+	 * 调用大模型获取图表配置信息；NL2SQL 模式或全局关闭时直接返回表格展示，不调用 LLM。
 	 * @param state 整体状态
 	 * @param resultSetBO SQL执行结果
 	 */
 	private DisplayStyleBO enrichResultSetWithChartConfig(OverAllState state, ResultSetBO resultSetBO) {
-		// 创建ResultDisplayStyleBO对象
 		DisplayStyleBO displayStyle = new DisplayStyleBO();
-		if (!this.properties.isEnableSqlResultChart()) {
-			log.debug("Sql result chart is disabled, set display style as table default");
+		boolean nl2sqlOnly = Boolean.TRUE.equals(state.value(Constant.IS_ONLY_NL2SQL, false));
+		if (!this.properties.isEnableSqlResultChart() || nl2sqlOnly) {
+			log.debug("Skip chart config LLM (enableSqlResultChart={}, nl2sqlOnly={}), use table display",
+					this.properties.isEnableSqlResultChart(), nl2sqlOnly);
 			displayStyle.setType("table");
 			return displayStyle;
 		}

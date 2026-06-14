@@ -19,6 +19,8 @@ import static com.alibaba.cloud.ai.dataagent.constant.Constant.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.ArrayList;
@@ -257,6 +259,26 @@ class SqlExecuteNodeTest {
 		assertNotNull(result);
 		assertTrue(result.containsKey(SQL_EXECUTE_NODE_OUTPUT));
 		assertNotNull(result.get(SQL_EXECUTE_NODE_OUTPUT));
+	}
+
+	@Test
+	void apply_nl2sqlOnlyMode_skipsChartConfigLlm() throws Exception {
+		OverAllState state = createTestState();
+		state.registerKeyAndStrategy(IS_ONLY_NL2SQL, new ReplaceStrategy());
+		setupBasicState(state);
+		state.updateState(Map.of(IS_ONLY_NL2SQL, true));
+		setupBasicMocks();
+
+		ResultSetBO resultSetBO = new ResultSetBO();
+		resultSetBO.setData(new ArrayList<>(List.of(Map.of("name", "Alice", "age", "30"))));
+
+		when(accessor.executeSqlAndReturnObject(any(), any())).thenReturn(resultSetBO);
+		when(properties.isEnableSqlResultChart()).thenReturn(true);
+
+		Map<String, Object> result = sqlExecuteNode.apply(state);
+		assertNotNull(result);
+		assertTrue(result.containsKey(SQL_EXECUTE_NODE_OUTPUT));
+		verify(llmService, never()).call(anyString(), anyString());
 	}
 
 	@Test

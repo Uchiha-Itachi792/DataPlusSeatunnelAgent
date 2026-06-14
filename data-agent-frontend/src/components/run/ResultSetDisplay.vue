@@ -230,10 +230,18 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    //margin-left: 15px;
     margin-bottom: 12px;
     padding: 8px 0;
     border-bottom: 1px solid #ebeef5;
+    color: #303133;
+  }
+
+  .result-set-header-bar .agent-response-title {
+    color: #303133;
+    background: transparent;
+    padding: 0;
+    border-bottom: none;
+    font-weight: 600;
   }
 
   .buttons-bar {
@@ -265,5 +273,35 @@
   .result-show-area {
     width: 100%;
     min-height: 300px;
+    color: #303133;
+  }
+</style>
+
+<!-- v-html 表格类名无 scoped 标记，单独全局样式块保证 ResultSetDisplay 内表格可读 -->
+<style>
+  .result-set-container {
+    color: #303133;
+  }
+
+  .result-set-table td {
+    color: #303133;
+    background: #ffffff;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .result-set-container {
+      color: #e5e7eb;
+    }
+
+    .result-set-table td {
+      color: #e5e7eb;
+      background: #1f2937;
+    }
+
+    .result-set-header-bar,
+    .result-set-header-bar .agent-response-title {
+      color: #e5e7eb;
+      border-bottom-color: #374151;
+    }
   }
 </style>
