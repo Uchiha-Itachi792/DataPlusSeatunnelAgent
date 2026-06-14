@@ -28,6 +28,7 @@ spring:
       type: simple
     alibaba:
       data-agent:
+        enrich-sql-result-timeout: 30000 # 作用：调大LLM将sql结果转换为图表分析的超时时间
         vector-store:
           table-topk-limit: 10
           table-similarity-threshold: 0.2
