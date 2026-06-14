@@ -75,6 +75,7 @@ public class AgentVectorStoreServiceImpl implements AgentVectorStoreService {
 
 		// 组装检索请求：query/topK/threshold 决定语义召回范围，filterExpression 限定 metadata 白名单
 		// HybridSearchRequest 统一承载纯向量与混合检索参数，后续按配置走 hybrid 或 toVectorSearchRequest()
+		// HybridSearchRequest 比 Spring AI 原生的 SearchRequest 多了混合检索相关字段（向量权重、关键词权重、rerank 等）：
 		HybridSearchRequest hybridRequest = HybridSearchRequest.builder()
 			.query(searchRequest.getQuery()) // 用户问题，用于 embedding 相似度匹配
 			.topK(searchRequest.getTopK()) // 最多返回文档数

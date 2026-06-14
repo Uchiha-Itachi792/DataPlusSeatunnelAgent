@@ -282,7 +282,17 @@ public class SchemaServiceImpl implements SchemaService {
 		metadata.put(DocumentMetadataConstant.VECTOR_TYPE, DocumentMetadataConstant.TABLE);
 		agentVectorStoreService.deleteDocumentsByMetadata(metadata);
 	}
-
+	/**
+	 * 按 metadata 精确召回某数据源下的表结构文档。
+	 * <p>
+	 * 过滤条件：{@code datasourceId == xxx AND vectorType == table}，与入库时
+	 * {@link com.alibaba.cloud.ai.dataagent.util.DocumentConverterUtil#convertTableToDocument} 写入的 metadata 对应。
+	 * Schema 文档不使用 {@code agentId} 隔离，仅按数据源区分。
+	 * </p>
+	 * @param datasourceId 激活数据源 ID（来自 {@code agent_datasource}），会转为字符串参与 filter
+	 * @param query 用户问题，预留语义召回；当前实现未参与检索
+	 * @return 最多 {@code tableTopkLimit} 条表 Document；后续从 metadata {@code name} 提取表名
+	 */
 	@Override
 	public List<Document> getTableDocumentsByDatasource(Integer datasourceId, String query) {
 		Assert.notNull(datasourceId, "datasourceId cannot be null");
