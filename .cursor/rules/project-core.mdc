@@ -1,0 +1,11 @@
+---
+description: DataAgent 核心开发约定
+alwaysApply: true
+---
+
+# 核心约定
+
+- 编码规范见 `docs/DEVELOPER_GUIDE.md`（Java: Google Style + Javadoc；TS: Prettier/ESLint）。
+- 改代码前先搜索仓库内类似实现，优先复用现有 Service、Node、Executor。
+- 新配置项放在 `spring.ai.alibaba.data-agent.*` 下，并在 yml 中加中文注释。
+- 架构概览、常用命令、StateGraph 流程见根目录 `CLAUDE.md`，不要在此重复。

@@ -1,0 +1,14 @@
+---
+description: 新增/修改 StateGraph 节点规范
+globs: data-agent-management/**/workflow/**/*.java
+alwaysApply: false
+---
+
+# 新增 Workflow Node
+
+1. 类名 `*Node.java`，包路径 `workflow/node/`，实现 `NodeAction`。
+2. 在 `Constant.java` 增加节点名常量（及必要的 `*_OUTPUT` 状态键）。
+3. 在 `DataAgentConfiguration` 中通过 `addNode(...)` 注册。
+4. 若需分支路由，新增 `workflow/dispatcher/*Dispatcher.java` 并在 `DataAgentConfiguration` 中 `addConditionalEdges`。
+5. 补充 `workflow/node/*NodeTest.java` 与对应 dispatcher 测试。
+6. 同步更新 `docs/ARCHITECTURE.md`；若涉及 Human Feedback、MCP 等高级能力，更新 `docs/ADVANCED_FEATURES.md`。

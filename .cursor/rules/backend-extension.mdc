@@ -1,0 +1,22 @@
+---
+description: 扩展 MCP Tool 与外部进程执行
+globs: data-agent-management/**/service/**/*.java
+alwaysApply: false
+---
+
+# MCP Tool（供外部 Agent 调用）
+
+- 在 `McpServerService`（或独立 `@Service`）上用 `@Tool` 声明。
+- 通过 `McpServerConfig` 的 `MethodToolCallbackProvider` 暴露。
+- 参考现有 `nl2SqlToolCallback`、`listAgentsToolCallback`。
+
+# 工作流内代码/命令执行（非 MCP Tool）
+
+- 实现或扩展 `CodePoolExecutorService`（local/docker），不要与 MCP Tool 混用。
+- 外部进程参考 `LocalCodePoolExecutorService`：
+  - `ProcessBuilder` + 可配置解释器/路径
+  - `BufferedReader` 读取 stdout/stderr
+  - `waitFor` + `CodeExecutorProperties` 超时
+  - Docker 模式作沙箱隔离
+- 集成 SeaTunnel 等 CLI：新建独立 `*ExecutorService`，配置项进 `spring.ai.alibaba.data-agent.*`；
+  超时与可执行路径必须可配置；retry 仅在业务需要时显式实现，不要假设现有 Executor 已有通用 retry。
