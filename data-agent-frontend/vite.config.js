@@ -26,6 +26,10 @@ export default defineConfig({
   },
   server: {
     port: 3000,
+    // 开发环境禁用浏览器缓存，避免 304 + ERR_CACHE_READ_FAILURE 导致懒加载模块失败
+    headers: {
+      'Cache-Control': 'no-store',
+    },
     proxy: {
       '/api': {
         target: 'http://localhost:8065',
