@@ -22,7 +22,10 @@ import com.alibaba.cloud.ai.dataagent.util.StateUtil;
 import lombok.extern.slf4j.Slf4j;
 
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.EVIDENCE_RECALL_NODE;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_CLASSIFICATION_CHAT;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_CLASSIFICATION_SYNC_TASK;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_RECOGNITION_NODE_OUTPUT;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.SYNC_TASK_STUB_NODE;
 import static com.alibaba.cloud.ai.graph.StateGraph.END;
 
 /**
@@ -45,15 +48,17 @@ public class IntentRecognitionDispatcher implements EdgeAction {
 
 		String classification = intentResult.getClassification();
 
-		// 根据分类结果决定下一个节点
-		if ("《闲聊或无关指令》".equals(classification)) {
+		if (INTENT_CLASSIFICATION_CHAT.equals(classification)) {
 			log.warn("Intent classified as chat or irrelevant, ending conversation");
 			return END;
 		}
-		else {
-			log.info("Intent classified as potential data analysis request, proceeding to evidence recall");
-			return EVIDENCE_RECALL_NODE;
+		if (INTENT_CLASSIFICATION_SYNC_TASK.equals(classification)) {
+			log.info("Intent classified as data sync task, proceeding to SyncTaskStubNode");
+			return SYNC_TASK_STUB_NODE;
 		}
+
+		log.info("Intent classified as potential data analysis request, proceeding to evidence recall");
+		return EVIDENCE_RECALL_NODE;
 	}
 
 }

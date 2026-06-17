@@ -125,9 +125,11 @@ flowchart LR
 flowchart TD
   Start([Start]) --> BuildCtx[Build MultiTurn Context]
   BuildCtx --> Intent[IntentRecognitionNode]
-  Intent --> IntentGate{Need analysis}
-  IntentGate -->|no| End([End])
-  IntentGate -->|yes| Evidence[EvidenceRecallNode]
+  Intent --> IntentGate{Intent type}
+  IntentGate -->|chat| End([End])
+  IntentGate -->|sync| SyncStub[SyncTaskStubNode]
+  SyncStub --> End
+  IntentGate -->|analysis| Evidence[EvidenceRecallNode]
   Evidence --> Rewrite[QueryEnhanceNode]
   Rewrite --> Schema[SchemaRecallNode]
   Schema --> Relation[TableRelationNode]
@@ -183,6 +185,7 @@ flowchart TD
 
   class Start,End terminal
   class BuildCtx,Intent input
+  class SyncStub input
   class Evidence,Rewrite,Schema,Relation retrieval
   class Feasible,Planner,PlanValidate,StepSelect planning
   class IntentGate,RelGate,FeasibleGate,HumanGate,SQLGate,SemGate,SQLGate2,PyGate,PyGate2,ReportGate decision
@@ -193,6 +196,16 @@ flowchart TD
 ```
 
 ## 🎯 关键能力说明
+
+### 0. 意图识别（三类分流）
+
+`IntentRecognitionNode` 结合 Prompt 模板 `intent-recognition.txt`，将用户输入分为三类：
+
+| 分类 | 路由 |
+|------|------|
+| 《闲聊或无关指令》 | 直接 `END` |
+| 《数据同步任务》 | `SyncTaskStubNode` → 输出占位提示 → `END`（SeaTunnel 接入前） |
+| 《可能的数据分析请求》 | 进入 EvidenceRecall 及后续分析链路 |
 
 ### 1. 人类反馈机制
 

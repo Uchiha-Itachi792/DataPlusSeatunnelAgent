@@ -38,7 +38,7 @@ import java.util.Map;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.*;
 
 /**
- * 工作流首站：意图识别（闲聊 vs 可能的数据分析）。
+ * 工作流首站：意图识别（闲聊 / 数据分析 / 数据同步）。
  * <p>
  * 数据流（仅列本仓库内可跳转的类）：
  * <ol>

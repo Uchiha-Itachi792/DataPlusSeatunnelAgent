@@ -25,9 +25,9 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 public class IntentRecognitionOutputDTO {
 
-	// 意图分类结果，值为"《闲聊或无关指令》"或"《可能的数据分析请求》"
+	// 意图分类结果，值为"《闲聊或无关指令》"、"《数据同步任务》"或"《可能的数据分析请求》"
 	@JsonProperty("classification")
-	@JsonPropertyDescription("意图分类结果，值为：《闲聊或无关指令》或《可能的数据分析请求》")
+	@JsonPropertyDescription("意图分类结果，值为：《闲聊或无关指令》、《数据同步任务》或《可能的数据分析请求》")
 	private String classification;
 
 }

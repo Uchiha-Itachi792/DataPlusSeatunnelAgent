@@ -128,6 +128,7 @@ public class DataAgentConfiguration implements DisposableBean {
 			keyStrategyHashMap.put(MULTI_TURN_CONTEXT, KeyStrategy.REPLACE);
 			// Intent recognition
 			keyStrategyHashMap.put(INTENT_RECOGNITION_NODE_OUTPUT, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(SYNC_TASK_STUB_NODE_OUTPUT, KeyStrategy.REPLACE);
 			// QUERY_ENHANCE_NODE节点输出
 			keyStrategyHashMap.put(QUERY_ENHANCE_NODE_OUTPUT, KeyStrategy.REPLACE);
 			// Semantic model
@@ -184,7 +185,8 @@ public class DataAgentConfiguration implements DisposableBean {
 		// 注册 StateGraph 节点；执行顺序由下方 addEdge / addConditionalEdges 决定，与注册顺序无关
 		StateGraph stateGraph = new StateGraph(NL2SQL_GRAPH_NAME, keyStrategyFactory)
 			// --- 准备阶段：理解问题并召回 Schema / Evidence ---
-			.addNode(INTENT_RECOGNITION_NODE, nodeBeanUtil.getNodeBeanAsync(IntentRecognitionNode.class)) // 意图识别：闲聊 vs 数据分析
+			.addNode(INTENT_RECOGNITION_NODE, nodeBeanUtil.getNodeBeanAsync(IntentRecognitionNode.class)) // 意图识别：闲聊 / 数据分析 / 数据同步
+			.addNode(SYNC_TASK_STUB_NODE, nodeBeanUtil.getNodeBeanAsync(SyncTaskStubNode.class)) // 数据同步占位（SeaTunnel 接入前）
 			.addNode(EVIDENCE_RECALL_NODE, nodeBeanUtil.getNodeBeanAsync(EvidenceRecallNode.class)) // RAG 召回业务术语与 Agent 知识
 			.addNode(QUERY_ENHANCE_NODE, nodeBeanUtil.getNodeBeanAsync(QueryEnhanceNode.class)) // 结合 Evidence 改写/增强用户问题
 			.addNode(SCHEMA_RECALL_NODE, nodeBeanUtil.getNodeBeanAsync(SchemaRecallNode.class)) // 向量召回相关表、列
@@ -204,7 +206,9 @@ public class DataAgentConfiguration implements DisposableBean {
 
 		stateGraph.addEdge(START, INTENT_RECOGNITION_NODE)
 			.addConditionalEdges(INTENT_RECOGNITION_NODE, edge_async(new IntentRecognitionDispatcher()),
-					Map.of(EVIDENCE_RECALL_NODE, EVIDENCE_RECALL_NODE, END, END))
+					Map.of(EVIDENCE_RECALL_NODE, EVIDENCE_RECALL_NODE, SYNC_TASK_STUB_NODE, SYNC_TASK_STUB_NODE, END,
+							END))
+			.addEdge(SYNC_TASK_STUB_NODE, END)
 			.addEdge(EVIDENCE_RECALL_NODE, QUERY_ENHANCE_NODE)
 			.addConditionalEdges(QUERY_ENHANCE_NODE, edge_async(new QueryEnhanceDispatcher()),
 					Map.of(SCHEMA_RECALL_NODE, SCHEMA_RECALL_NODE, END, END))

@@ -40,7 +40,7 @@ class IntentRecognitionDispatcherTest {
 	@Test
 	void apply_dataAnalysisIntent_routesToEvidenceRecall() throws Exception {
 		OverAllState state = new OverAllState();
-		IntentRecognitionOutputDTO dto = TestFixtures.createIntentDTO("《可能的数据分析请求》");
+		IntentRecognitionOutputDTO dto = TestFixtures.createIntentDTO(INTENT_CLASSIFICATION_DATA_ANALYSIS);
 		state.updateState(Map.of(INTENT_RECOGNITION_NODE_OUTPUT, dto));
 
 		assertEquals(EVIDENCE_RECALL_NODE, dispatcher.apply(state));
@@ -49,10 +49,19 @@ class IntentRecognitionDispatcherTest {
 	@Test
 	void apply_chatIntent_routesToEnd() throws Exception {
 		OverAllState state = new OverAllState();
-		IntentRecognitionOutputDTO dto = TestFixtures.createIntentDTO("《闲聊或无关指令》");
+		IntentRecognitionOutputDTO dto = TestFixtures.createIntentDTO(INTENT_CLASSIFICATION_CHAT);
 		state.updateState(Map.of(INTENT_RECOGNITION_NODE_OUTPUT, dto));
 
 		assertEquals(END, dispatcher.apply(state));
+	}
+
+	@Test
+	void apply_syncTaskIntent_routesToSyncTaskStubNode() throws Exception {
+		OverAllState state = new OverAllState();
+		IntentRecognitionOutputDTO dto = TestFixtures.createIntentDTO(INTENT_CLASSIFICATION_SYNC_TASK);
+		state.updateState(Map.of(INTENT_RECOGNITION_NODE_OUTPUT, dto));
+
+		assertEquals(SYNC_TASK_STUB_NODE, dispatcher.apply(state));
 	}
 
 	@Test

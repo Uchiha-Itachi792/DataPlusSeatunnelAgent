@@ -98,6 +98,20 @@ public final class Constant {
 
 	public static final String INTENT_RECOGNITION_NODE = "INTENT_RECOGNITION_NODE";
 
+	// 意图分类结果（与 intent-recognition.txt 一致）
+	public static final String INTENT_CLASSIFICATION_CHAT = "《闲聊或无关指令》";
+
+	public static final String INTENT_CLASSIFICATION_DATA_ANALYSIS = "《可能的数据分析请求》";
+
+	public static final String INTENT_CLASSIFICATION_SYNC_TASK = "《数据同步任务》";
+
+	// 数据同步 Stub 节点
+	public static final String SYNC_TASK_STUB_NODE = "SYNC_TASK_STUB_NODE";
+
+	public static final String SYNC_TASK_STUB_NODE_OUTPUT = "SYNC_TASK_STUB_NODE_OUTPUT";
+
+	public static final String SYNC_CAPABILITY_UNDER_DEVELOPMENT_MSG = "同步能力开发中，敬请期待。";
+
 	public static final String EVIDENCE_RECALL_NODE = "EVIDENCE_RECALL_NODE";
 
 	public static final String QUERY_ENHANCE_NODE = "QUERY_ENHANCE_NODE";
