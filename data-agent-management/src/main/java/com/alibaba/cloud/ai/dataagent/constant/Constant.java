@@ -105,12 +105,16 @@ public final class Constant {
 
 	public static final String INTENT_CLASSIFICATION_SYNC_TASK = "《数据同步任务》";
 
-	// 数据同步 Stub 节点
-	public static final String SYNC_TASK_STUB_NODE = "SYNC_TASK_STUB_NODE";
+	// 数据同步节点
+	public static final String SYNC_TASK_NODE = "SYNC_TASK_NODE";
 
-	public static final String SYNC_TASK_STUB_NODE_OUTPUT = "SYNC_TASK_STUB_NODE_OUTPUT";
+	public static final String SYNC_TASK_NODE_OUTPUT = "SYNC_TASK_NODE_OUTPUT";
 
-	public static final String SYNC_CAPABILITY_UNDER_DEVELOPMENT_MSG = "同步能力开发中，敬请期待。";
+	public static final String SYNC_COLUMN_MISMATCH_MSG = "字段名字不一致，无法同步";
+
+	public static final String SYNC_PARSE_FAILED_MSG = "无法识别源表或目标表，请明确说明";
+
+	public static final String SYNC_UNSUPPORTED_DATASOURCE_MSG = "当前仅支持 MySQL 数据源的表同步 SQL 生成";
 
 	public static final String EVIDENCE_RECALL_NODE = "EVIDENCE_RECALL_NODE";
 

@@ -16,6 +16,7 @@
 package com.alibaba.cloud.ai.dataagent.service.datasource;
 
 import com.alibaba.cloud.ai.dataagent.bo.DbConfigBO;
+import com.alibaba.cloud.ai.dataagent.bo.schema.ColumnInfoBO;
 import com.alibaba.cloud.ai.dataagent.entity.AgentDatasource;
 import com.alibaba.cloud.ai.dataagent.entity.Datasource;
 import com.alibaba.cloud.ai.dataagent.entity.LogicalRelation;
@@ -81,6 +82,16 @@ public interface DatasourceService {
 	 * 获取数据源表的字段列表
 	 */
 	List<String> getTableColumns(Integer datasourceId, String tableName) throws Exception;
+
+	/**
+	 * 获取表的完整列元数据（含类型、主键、非空等）。
+	 */
+	List<ColumnInfoBO> getTableColumnMetadata(Integer datasourceId, String tableName) throws Exception;
+
+	/**
+	 * 判断表是否存在于数据源中（表名大小写不敏感）。
+	 */
+	boolean tableExists(Integer datasourceId, String tableName) throws Exception;
 
 	DbConfigBO getDbConfig(Datasource datasource);
 

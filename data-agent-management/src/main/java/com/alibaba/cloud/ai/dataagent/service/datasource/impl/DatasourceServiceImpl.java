@@ -259,37 +259,44 @@ public class DatasourceServiceImpl implements DatasourceService {
 
 	@Override
 	public List<String> getTableColumns(Integer datasourceId, String tableName) throws Exception {
-		log.info("Getting columns for table: {} in datasource: {}", tableName, datasourceId);
+		return getTableColumnMetadata(datasourceId, tableName).stream()
+			.map(ColumnInfoBO::getName)
+			.filter(name -> name != null && !name.trim().isEmpty())
+			.sorted()
+			.toList();
+	}
 
-		// 获取数据源信息
+	@Override
+	public List<ColumnInfoBO> getTableColumnMetadata(Integer datasourceId, String tableName) throws Exception {
+		log.info("Getting column metadata for table: {} in datasource: {}", tableName, datasourceId);
+
 		Datasource datasource = this.getDatasourceById(datasourceId);
 		if (datasource == null) {
 			throw new RuntimeException("Datasource not found with id: " + datasourceId);
 		}
 
-		// 创建数据库配置
 		DbConfigBO dbConfig = getDbConfig(datasource);
-
-		// 创建查询参数
 		DbQueryParameter queryParam = DbQueryParameter.from(dbConfig);
 
-		// 提取schema名称
 		DatasourceTypeHandler handler = datasourceTypeHandlerRegistry.getRequired(datasource.getType());
 		String schemaName = handler.extractSchemaName(datasource);
 		queryParam.setSchema(schemaName);
 		queryParam.setTable(tableName);
 
-		// 查询字段列表
 		Accessor dbAccessor = accessorFactory.getAccessorByDbConfig(dbConfig);
-		List<ColumnInfoBO> columnInfoList = dbAccessor.showColumns(dbConfig, queryParam); // 提取字段名称
-		List<String> columnNames = columnInfoList.stream()
-			.map(ColumnInfoBO::getName)
-			.filter(name -> name != null && !name.trim().isEmpty())
-			.sorted()
-			.toList();
+		List<ColumnInfoBO> columnInfoList = dbAccessor.showColumns(dbConfig, queryParam);
+		log.info("Found {} columns metadata for table {} in datasource: {}", columnInfoList.size(), tableName,
+				datasourceId);
+		return columnInfoList;
+	}
 
-		log.info("Found {} columns for table {} in datasource: {}", columnNames.size(), tableName, datasourceId);
-		return columnNames;
+	@Override
+	public boolean tableExists(Integer datasourceId, String tableName) throws Exception {
+		if (tableName == null || tableName.trim().isEmpty()) {
+			return false;
+		}
+		List<String> tables = getDatasourceTables(datasourceId);
+		return tables.stream().anyMatch(t -> t.equalsIgnoreCase(tableName.trim()));
 	}
 
 	@Override

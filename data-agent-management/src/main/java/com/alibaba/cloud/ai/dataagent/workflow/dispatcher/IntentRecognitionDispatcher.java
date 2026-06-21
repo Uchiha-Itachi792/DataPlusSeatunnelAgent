@@ -25,7 +25,7 @@ import static com.alibaba.cloud.ai.dataagent.constant.Constant.EVIDENCE_RECALL_N
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_CLASSIFICATION_CHAT;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_CLASSIFICATION_SYNC_TASK;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_RECOGNITION_NODE_OUTPUT;
-import static com.alibaba.cloud.ai.dataagent.constant.Constant.SYNC_TASK_STUB_NODE;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.SYNC_TASK_NODE;
 import static com.alibaba.cloud.ai.graph.StateGraph.END;
 
 /**
@@ -53,8 +53,8 @@ public class IntentRecognitionDispatcher implements EdgeAction {
 			return END;
 		}
 		if (INTENT_CLASSIFICATION_SYNC_TASK.equals(classification)) {
-			log.info("Intent classified as data sync task, proceeding to SyncTaskStubNode");
-			return SYNC_TASK_STUB_NODE;
+			log.info("Intent classified as data sync task, proceeding to SyncTaskNode");
+			return SYNC_TASK_NODE;
 		}
 
 		log.info("Intent classified as potential data analysis request, proceeding to evidence recall");

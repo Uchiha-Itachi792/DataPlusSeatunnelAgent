@@ -127,8 +127,8 @@ flowchart TD
   BuildCtx --> Intent[IntentRecognitionNode]
   Intent --> IntentGate{Intent type}
   IntentGate -->|chat| End([End])
-  IntentGate -->|sync| SyncStub[SyncTaskStubNode]
-  SyncStub --> End
+  IntentGate -->|sync| SyncNode[SyncTaskNode]
+  SyncNode --> End
   IntentGate -->|analysis| Evidence[EvidenceRecallNode]
   Evidence --> Rewrite[QueryEnhanceNode]
   Rewrite --> Schema[SchemaRecallNode]
@@ -185,7 +185,7 @@ flowchart TD
 
   class Start,End terminal
   class BuildCtx,Intent input
-  class SyncStub input
+  class SyncNode input
   class Evidence,Rewrite,Schema,Relation retrieval
   class Feasible,Planner,PlanValidate,StepSelect planning
   class IntentGate,RelGate,FeasibleGate,HumanGate,SQLGate,SemGate,SQLGate2,PyGate,PyGate2,ReportGate decision
@@ -204,8 +204,16 @@ flowchart TD
 | 分类 | 路由 |
 |------|------|
 | 《闲聊或无关指令》 | 直接 `END` |
-| 《数据同步任务》 | `SyncTaskStubNode` → 输出占位提示 → `END`（SeaTunnel 接入前） |
+| 《数据同步任务》 | `SyncTaskNode` → 解析源/目标表、比对列元数据，生成 MySQL `INSERT ... SELECT` 或 `CREATE TABLE`（仅展示，不执行）→ `END` |
 | 《可能的数据分析请求》 | 进入 EvidenceRecall 及后续分析链路 |
+
+`SyncTaskNode` 三场景逻辑（首版 MySQL，Agent 当前激活数据源）：
+
+| 条件 | 输出 |
+|------|------|
+| 目标表存在且列名与源表一致 | `INSERT INTO target (...) SELECT ... FROM source` |
+| 目标表存在但列名不一致 | `字段名字不一致，无法同步` |
+| 目标表不存在 | `CREATE TABLE target (...)`（结构参照源表） |
 
 ### 1. 人类反馈机制
 

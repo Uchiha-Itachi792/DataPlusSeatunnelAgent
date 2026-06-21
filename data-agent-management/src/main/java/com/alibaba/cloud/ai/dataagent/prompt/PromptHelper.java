@@ -18,6 +18,7 @@ package com.alibaba.cloud.ai.dataagent.prompt;
 import com.alibaba.cloud.ai.dataagent.bo.schema.DisplayStyleBO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.EvidenceQueryRewriteDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.IntentRecognitionOutputDTO;
+import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncIntentParseDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.QueryEnhanceOutputDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SemanticConsistencyDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SqlGenerationDTO;
@@ -240,6 +241,18 @@ public class PromptHelper {
 				IntentRecognitionOutputDTO.class);
 		params.put("format", beanOutputConverter.getFormat());
 		return PromptConstant.getIntentRecognitionPromptTemplate().render(params);
+	}
+
+	/**
+	 * 构建数据同步意图解析提示词（提取源表/目标表）。
+	 */
+	public static String buildSyncIntentParsePrompt(String multiTurn, String latestQuery) {
+		Map<String, Object> params = new HashMap<>();
+		params.put("multi_turn", multiTurn != null ? multiTurn : "(无)");
+		params.put("latest_query", latestQuery);
+		BeanOutputConverter<SyncIntentParseDTO> beanOutputConverter = new BeanOutputConverter<>(SyncIntentParseDTO.class);
+		params.put("format", beanOutputConverter.getFormat());
+		return PromptConstant.getSyncIntentParsePromptTemplate().render(params);
 	}
 
 	/**

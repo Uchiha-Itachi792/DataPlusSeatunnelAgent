@@ -29,6 +29,11 @@ public class PromptConstant {
 		return new PromptTemplate(PromptLoader.loadPrompt("intent-recognition"));
 	}
 
+	// sync-intent-parse
+	public static PromptTemplate getSyncIntentParsePromptTemplate() {
+		return new PromptTemplate(PromptLoader.loadPrompt("sync-intent-parse"));
+	}
+
 	// evidence-query-rewrite
 	public static PromptTemplate getEvidenceQueryRewritePromptTemplate() {
 		return new PromptTemplate(PromptLoader.loadPrompt("evidence-query-rewrite"));

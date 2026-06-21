@@ -56,12 +56,12 @@ class IntentRecognitionDispatcherTest {
 	}
 
 	@Test
-	void apply_syncTaskIntent_routesToSyncTaskStubNode() throws Exception {
+	void apply_syncTaskIntent_routesToSyncTaskNode() throws Exception {
 		OverAllState state = new OverAllState();
 		IntentRecognitionOutputDTO dto = TestFixtures.createIntentDTO(INTENT_CLASSIFICATION_SYNC_TASK);
 		state.updateState(Map.of(INTENT_RECOGNITION_NODE_OUTPUT, dto));
 
-		assertEquals(SYNC_TASK_STUB_NODE, dispatcher.apply(state));
+		assertEquals(SYNC_TASK_NODE, dispatcher.apply(state));
 	}
 
 	@Test
