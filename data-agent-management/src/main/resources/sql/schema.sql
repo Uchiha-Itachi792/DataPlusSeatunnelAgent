@@ -268,3 +268,23 @@ CREATE TABLE IF NOT EXISTS `model_config` (
     `proxy_password` varchar(255) DEFAULT NULL COMMENT '代理密码（可选）',
     PRIMARY KEY (`id`)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 同步 SQL 审批表
+CREATE TABLE IF NOT EXISTS sql_check (
+    id INT NOT NULL AUTO_INCREMENT,
+    agent_id INT NOT NULL COMMENT '智能体ID',
+    datasource_id INT NOT NULL COMMENT '数据源ID',
+    source_table VARCHAR(255) NOT NULL COMMENT '源表',
+    target_table VARCHAR(255) NOT NULL COMMENT '目标表',
+    sync_sql TEXT NOT NULL COMMENT '同步SQL语句',
+    sql_type VARCHAR(20) NOT NULL COMMENT 'SQL类型：CREATE_SQL/INSERT_SQL',
+    exec_status VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT '执行状态：PENDING-未执行，SUCCESS-成功，IGNORED-忽略，FAILED-失败',
+    error_msg TEXT COMMENT '执行失败错误信息',
+    create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    exec_time TIMESTAMP NULL COMMENT '执行时间',
+    PRIMARY KEY (id),
+    INDEX idx_agent_id (agent_id),
+    INDEX idx_exec_status (exec_status),
+    INDEX idx_create_time (create_time)
+) ENGINE = InnoDB COMMENT = '同步SQL审批表';

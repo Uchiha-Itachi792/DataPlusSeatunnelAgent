@@ -32,6 +32,10 @@
               <i class="bi bi-gear"></i>
               <span>模型配置</span>
             </div>
+            <div class="nav-item" :class="{ active: isSqlApprovalPage() }" @click="goToSqlApproval">
+              <i class="bi bi-check2-square"></i>
+              <span>SQL审批</span>
+            </div>
           </nav>
         </div>
       </div>
@@ -61,6 +65,10 @@
         router.push('/model-config');
       };
 
+      const goToSqlApproval = () => {
+        router.push('/sql-check');
+      };
+
       const isAgentPage = () => {
         return (
           router.currentRoute.value.name === 'AgentList' ||
@@ -74,11 +82,17 @@
         return router.currentRoute.value.name === 'ModelConfig';
       };
 
+      const isSqlApprovalPage = () => {
+        return router.currentRoute.value.name === 'SqlApproval';
+      };
+
       return {
         goToAgentList,
         goToModelConfig,
+        goToSqlApproval,
         isAgentPage,
         isModelConfigPage,
+        isSqlApprovalPage,
       };
     },
   };

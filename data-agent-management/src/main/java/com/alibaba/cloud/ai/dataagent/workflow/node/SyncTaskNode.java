@@ -17,6 +17,7 @@ package com.alibaba.cloud.ai.dataagent.workflow.node;
 
 import com.alibaba.cloud.ai.dataagent.dto.sync.SyncTaskResult;
 import com.alibaba.cloud.ai.dataagent.enums.TextType;
+import com.alibaba.cloud.ai.dataagent.service.sync.SqlCheckService;
 import com.alibaba.cloud.ai.dataagent.service.sync.TableSyncService;
 import com.alibaba.cloud.ai.dataagent.util.ChatResponseUtil;
 import com.alibaba.cloud.ai.dataagent.util.FluxUtil;
@@ -38,7 +39,7 @@ import java.util.Map;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.*;
 
 /**
- * 数据同步任务节点：解析源/目标表，生成 MySQL 同步 SQL 或返回错误提示（不执行 SQL）。
+ * 数据同步任务节点：解析源/目标表，生成 MySQL 同步 SQL 并写入审批表（不直接执行 SQL）。
  */
 @Slf4j
 @Component
@@ -46,6 +47,8 @@ import static com.alibaba.cloud.ai.dataagent.constant.Constant.*;
 public class SyncTaskNode implements NodeAction {
 
 	private final TableSyncService tableSyncService;
+
+	private final SqlCheckService sqlCheckService;
 
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
@@ -58,7 +61,20 @@ public class SyncTaskNode implements NodeAction {
 		Long agentId = Long.valueOf(agentIdStr);
 		SyncTaskResult result = tableSyncService.generateSyncSql(agentId, userInput, multiTurn);
 
-		Flux<ChatResponse> messageFlux = buildMessageFlux(result);
+		boolean savedToApproval = false;
+		String saveError = null;
+		if (result.getType() != SyncTaskResult.Type.ERROR) {
+			try {
+				sqlCheckService.save(result, agentId);
+				savedToApproval = true;
+			}
+			catch (Exception ex) {
+				log.warn("Failed to save sync SQL to sql_check for agent {}: {}", agentId, ex.getMessage());
+				saveError = ex.getMessage();
+			}
+		}
+
+		Flux<ChatResponse> messageFlux = buildMessageFlux(result, savedToApproval, saveError);
 
 		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(this.getClass(),
 				state, "正在解析同步任务...", null, ignored -> Map.of(), messageFlux);
@@ -66,18 +82,24 @@ public class SyncTaskNode implements NodeAction {
 		return Map.of(SYNC_TASK_NODE_OUTPUT, generator);
 	}
 
-	private Flux<ChatResponse> buildMessageFlux(SyncTaskResult result) {
+	private Flux<ChatResponse> buildMessageFlux(SyncTaskResult result, boolean savedToApproval, String saveError) {
 		if (result.getType() == SyncTaskResult.Type.ERROR) {
 			return Flux.just(ChatResponseUtil.createResponse(result.getMessage()));
 		}
 
 		List<ChatResponse> chunks = new ArrayList<>();
-		String prefix = result.getType() == SyncTaskResult.Type.INSERT_SQL ? "已生成数据同步 SQL："
-				: "目标表不存在，已生成建表 SQL：";
-		chunks.add(ChatResponseUtil.createResponse(prefix));
+		chunks.add(ChatResponseUtil.createResponse("已生成数据同步 SQL 脚本："));
 		chunks.add(ChatResponseUtil.createPureResponse(TextType.SQL.getStartSign()));
 		chunks.add(ChatResponseUtil.createResponse(result.getSql()));
 		chunks.add(ChatResponseUtil.createPureResponse(TextType.SQL.getEndSign()));
+
+		if (savedToApproval) {
+			chunks.add(ChatResponseUtil.createResponse("\n请前往 SQL 审批页面查看。"));
+		}
+		else if (saveError != null) {
+			chunks.add(ChatResponseUtil.createResponse("\nSQL 已生成，但保存审批记录失败：" + saveError));
+		}
+
 		return Flux.fromIterable(chunks);
 	}
 

@@ -19,6 +19,7 @@ import com.alibaba.cloud.ai.dataagent.bo.schema.DisplayStyleBO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.EvidenceQueryRewriteDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.IntentRecognitionOutputDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncIntentParseDTO;
+import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncSqlGenerationDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.QueryEnhanceOutputDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SemanticConsistencyDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SqlGenerationDTO;
@@ -253,6 +254,22 @@ public class PromptHelper {
 		BeanOutputConverter<SyncIntentParseDTO> beanOutputConverter = new BeanOutputConverter<>(SyncIntentParseDTO.class);
 		params.put("format", beanOutputConverter.getFormat());
 		return PromptConstant.getSyncIntentParsePromptTemplate().render(params);
+	}
+
+	/**
+	 * 构建数据同步 SQL 生成提示词。
+	 */
+	public static String buildSyncSqlGeneratePrompt(SyncSqlGenerationDTO dto) {
+		String schemaInfo = buildMixMacSqlDbPrompt(dto.getSchemaDTO(), true);
+		Map<String, Object> params = new HashMap<>();
+		params.put("schema_info", schemaInfo);
+		params.put("source_table", dto.getSourceTable());
+		params.put("target_table", dto.getTargetTable());
+		params.put("related_tables", dto.getRelatedTables());
+		params.put("target_table_exists", dto.isTargetTableExists() ? "是" : "否（需生成 CREATE TABLE）");
+		params.put("user_requirement", dto.getUserInput());
+		params.put("multi_turn", dto.getMultiTurn() != null ? dto.getMultiTurn() : "(无)");
+		return PromptConstant.getSyncSqlGeneratePromptTemplate().render(params);
 	}
 
 	/**

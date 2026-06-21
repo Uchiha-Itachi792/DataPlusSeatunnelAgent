@@ -13,33 +13,50 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.alibaba.cloud.ai.dataagent.dto.prompt;
+package com.alibaba.cloud.ai.dataagent.entity;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
-import com.fasterxml.jackson.annotation.JsonPropertyDescription;
+import com.fasterxml.jackson.annotation.JsonFormat;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.time.LocalDateTime;
 
 /**
- * 对应模板 sync-intent-parse.txt 的输出。
+ * 同步 SQL 审批记录实体。
  */
 @Data
 @NoArgsConstructor
-public class SyncIntentParseDTO {
+@AllArgsConstructor
+@Builder
+public class SqlCheck {
 
-	@JsonProperty("sourceTable")
-	@JsonPropertyDescription("数据来源表名")
+	private Integer id;
+
+	private Integer agentId;
+
+	private Integer datasourceId;
+
 	private String sourceTable;
 
-	@JsonProperty("targetTable")
-	@JsonPropertyDescription("数据目标表名")
 	private String targetTable;
 
-	@JsonProperty("relatedTables")
-	@JsonPropertyDescription("参与 JOIN/聚合的其它表名")
-	private List<String> relatedTables = new ArrayList<>();
+	private String syncSql;
+
+	private String sqlType;
+
+	private String execStatus;
+
+	private String errorMsg;
+
+	@JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
+	private LocalDateTime createTime;
+
+	@JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
+	private LocalDateTime updateTime;
+
+	@JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
+	private LocalDateTime execTime;
 
 }

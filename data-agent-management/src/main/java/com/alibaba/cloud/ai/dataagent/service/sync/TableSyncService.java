@@ -17,6 +17,7 @@ package com.alibaba.cloud.ai.dataagent.service.sync;
 
 import com.alibaba.cloud.ai.dataagent.bo.schema.ColumnInfoBO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncIntentParseDTO;
+import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncSqlGenerationDTO;
 import com.alibaba.cloud.ai.dataagent.dto.sync.SyncTaskResult;
 import com.alibaba.cloud.ai.dataagent.entity.AgentDatasource;
 import com.alibaba.cloud.ai.dataagent.entity.Datasource;
@@ -31,16 +32,18 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import static com.alibaba.cloud.ai.dataagent.constant.Constant.SYNC_COLUMN_MISMATCH_MSG;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.SYNC_PARSE_FAILED_MSG;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.SYNC_UNSUPPORTED_DATASOURCE_MSG;
 
 /**
- * 表同步 SQL 生成服务：解析源/目标表、比对列元数据并生成 MySQL DDL/DML。
+ * 表同步 SQL 生成服务：解析同步意图，基于 Schema + LLM 生成灵活同步脚本。
  */
 @Slf4j
 @Service
@@ -55,55 +58,108 @@ public class TableSyncService {
 
 	private final DatasourceService datasourceService;
 
-	private final MysqlSyncSqlBuilder mysqlSyncSqlBuilder;
+	private final SyncSchemaBuilder syncSchemaBuilder;
 
-	public SyncTaskResult generateSyncSql(Long agentId, String userInput, String multiTurn) throws Exception {
-		SyncIntentParseDTO parsed = parseTables(userInput, multiTurn);
-		if (parsed == null || !StringUtils.hasText(parsed.getSourceTable())
-				|| !StringUtils.hasText(parsed.getTargetTable())) {
-			return SyncTaskResult.error(SYNC_PARSE_FAILED_MSG);
+	private final SyncSqlGenerateService syncSqlGenerateService;
+
+	private final SyncRelatedTableExpander syncRelatedTableExpander;
+
+	public SyncTaskResult generateSyncSql(Long agentId, String userInput, String multiTurn) {
+		try {
+			SyncIntentParseDTO parsed = parseTables(userInput, multiTurn);
+			if (parsed == null || !StringUtils.hasText(parsed.getSourceTable())
+					|| !StringUtils.hasText(parsed.getTargetTable())) {
+				return SyncTaskResult.error(SYNC_PARSE_FAILED_MSG);
+			}
+
+			AgentDatasource agentDatasource = agentDatasourceService.getCurrentAgentDatasource(agentId);
+			Integer datasourceId = agentDatasource.getDatasourceId();
+			Datasource datasource = datasourceService.getDatasourceById(datasourceId);
+			if (datasource == null) {
+				return SyncTaskResult.error("Agent 关联的数据源不存在，无法同步");
+			}
+
+			if (!isMysqlDialect(datasource)) {
+				return SyncTaskResult.error(SYNC_UNSUPPORTED_DATASOURCE_MSG);
+			}
+
+			String requestedSource = parsed.getSourceTable().trim();
+			String requestedTarget = parsed.getTargetTable().trim();
+			String sourceTable = resolveTableName(datasourceId, requestedSource);
+			if (sourceTable == null) {
+				return SyncTaskResult.error("源表 %s 不存在，无法同步".formatted(requestedSource));
+			}
+
+			List<String> relatedRequested = normalizeRelatedTables(
+					syncRelatedTableExpander.expand(datasourceId, sourceTable, userInput, parsed.getRelatedTables()),
+					requestedSource, requestedTarget);
+			Map<String, String> resolvedRelated = new LinkedHashMap<>();
+			for (String related : relatedRequested) {
+				String resolved = resolveTableName(datasourceId, related);
+				if (resolved == null) {
+					return SyncTaskResult.error("关联表 %s 不存在，无法同步".formatted(related));
+				}
+				resolvedRelated.put(related, resolved);
+			}
+
+			String targetTable = resolveTableName(datasourceId, requestedTarget);
+			boolean targetExists = targetTable != null;
+
+			Map<String, List<ColumnInfoBO>> tableColumns = new LinkedHashMap<>();
+			tableColumns.put(sourceTable, loadColumns(datasourceId, sourceTable, requestedSource));
+			for (Map.Entry<String, String> entry : resolvedRelated.entrySet()) {
+				tableColumns.put(entry.getValue(), loadColumns(datasourceId, entry.getValue(), entry.getKey()));
+			}
+			if (targetExists) {
+				tableColumns.put(targetTable, loadColumns(datasourceId, targetTable, requestedTarget));
+			}
+
+			String relatedTablesDisplay = relatedRequested.isEmpty() ? "无"
+					: String.join(", ", relatedRequested);
+
+			SyncSqlGenerationDTO generationDTO = SyncSqlGenerationDTO.builder()
+				.userInput(userInput)
+				.multiTurn(multiTurn)
+				.schemaDTO(syncSchemaBuilder.build(tableColumns))
+				.sourceTable(requestedSource)
+				.targetTable(requestedTarget)
+				.relatedTables(relatedTablesDisplay)
+				.targetTableExists(targetExists)
+				.dialect(DatabaseDialectEnum.MYSQL.getCode())
+				.build();
+
+			String sql = syncSqlGenerateService.generate(generationDTO);
+			log.info("Generated sync SQL for agent {} from {} to {}", agentId, requestedSource, requestedTarget);
+			return SyncTaskResult.syncSql(sql, requestedSource, requestedTarget, datasourceId);
 		}
-
-		AgentDatasource agentDatasource = agentDatasourceService.getCurrentAgentDatasource(agentId);
-		Integer datasourceId = agentDatasource.getDatasourceId();
-		Datasource datasource = datasourceService.getDatasourceById(datasourceId);
-		if (datasource == null) {
-			return SyncTaskResult.error("Agent 关联的数据源不存在，无法同步");
+		catch (IllegalArgumentException | IllegalStateException ex) {
+			log.warn("Sync SQL generation failed for agent {}: {}", agentId, ex.getMessage());
+			return SyncTaskResult.error(ex.getMessage());
 		}
-
-		if (!isMysqlDialect(datasource)) {
-			return SyncTaskResult.error(SYNC_UNSUPPORTED_DATASOURCE_MSG);
+		catch (Exception ex) {
+			log.error("Unexpected error generating sync SQL for agent {}", agentId, ex);
+			return SyncTaskResult.error("生成同步 SQL 失败：" + ex.getMessage());
 		}
+	}
 
-		String sourceTable = resolveTableName(datasourceId, parsed.getSourceTable());
-		String targetTable = resolveTableName(datasourceId, parsed.getTargetTable());
-		String requestedSource = parsed.getSourceTable().trim();
-		String requestedTarget = parsed.getTargetTable().trim();
-
-		if (sourceTable == null) {
-			return SyncTaskResult.error("源表 %s 不存在，无法同步".formatted(requestedSource));
+	private List<ColumnInfoBO> loadColumns(Integer datasourceId, String tableName, String displayName) throws Exception {
+		List<ColumnInfoBO> columns = datasourceService.getTableColumnMetadata(datasourceId, tableName);
+		if (columns.isEmpty()) {
+			throw new IllegalStateException("表 %s 无可用字段，无法同步".formatted(displayName));
 		}
+		return columns;
+	}
 
-		List<ColumnInfoBO> sourceColumns = datasourceService.getTableColumnMetadata(datasourceId, sourceTable);
-		if (sourceColumns.isEmpty()) {
-			return SyncTaskResult.error("源表 %s 无可用字段，无法同步".formatted(requestedSource));
+	private List<String> normalizeRelatedTables(List<String> relatedTables, String sourceTable, String targetTable) {
+		if (relatedTables == null || relatedTables.isEmpty()) {
+			return List.of();
 		}
-
-		if (targetTable == null) {
-			String ddl = mysqlSyncSqlBuilder.buildCreateTable(requestedTarget, sourceColumns);
-			log.info("Target table {} not found, generated CREATE TABLE SQL", requestedTarget);
-			return SyncTaskResult.createSql(ddl);
-		}
-
-		List<ColumnInfoBO> targetColumns = datasourceService.getTableColumnMetadata(datasourceId, targetTable);
-		if (!columnNamesEqual(sourceColumns, targetColumns)) {
-			log.warn("Column mismatch between {} and {}", sourceTable, targetTable);
-			return SyncTaskResult.error(SYNC_COLUMN_MISMATCH_MSG);
-		}
-
-		String insertSql = mysqlSyncSqlBuilder.buildInsertSelect(sourceTable, targetTable, sourceColumns);
-		log.info("Generated INSERT SELECT SQL from {} to {}", sourceTable, targetTable);
-		return SyncTaskResult.insertSql(insertSql);
+		Set<String> excluded = Set.of(sourceTable.toLowerCase(), targetTable.toLowerCase());
+		return relatedTables.stream()
+			.filter(StringUtils::hasText)
+			.map(String::trim)
+			.filter(name -> !excluded.contains(name.toLowerCase()))
+			.collect(Collectors.toCollection(ArrayList::new));
 	}
 
 	private SyncIntentParseDTO parseTables(String userInput, String multiTurn) {
@@ -135,20 +191,6 @@ public class TableSyncService {
 		}
 		List<String> tables = datasourceService.getDatasourceTables(datasourceId);
 		return tables.stream().filter(t -> t.equalsIgnoreCase(requestedName.trim())).findFirst().orElse(null);
-	}
-
-	private boolean columnNamesEqual(List<ColumnInfoBO> sourceColumns, List<ColumnInfoBO> targetColumns) {
-		Set<String> sourceNames = toColumnNameSet(sourceColumns);
-		Set<String> targetNames = toColumnNameSet(targetColumns);
-		return sourceNames.equals(targetNames);
-	}
-
-	private Set<String> toColumnNameSet(List<ColumnInfoBO> columns) {
-		return columns.stream()
-			.map(ColumnInfoBO::getName)
-			.filter(StringUtils::hasText)
-			.map(name -> name.toLowerCase())
-			.collect(Collectors.toSet());
 	}
 
 }

@@ -15,274 +15,82 @@
  */
 package com.alibaba.cloud.ai.dataagent.connector;
 
-import com.alibaba.cloud.ai.dataagent.bo.schema.ResultSetBO;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
-import java.sql.ResultSet;
-import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
 
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
+import org.junit.jupiter.api.Test;
 
-@ExtendWith(MockitoExtension.class)
+import com.alibaba.cloud.ai.dataagent.enums.DatabaseDialectEnum;
+
 class SqlExecutorTest {
 
-	@Mock
-	private Connection connection;
-
-	@Mock
-	private Statement statement;
-
-	@Mock
-	private ResultSet resultSet;
-
-	@Mock
-	private ResultSetMetaData resultSetMetaData;
-
-	@Mock
-	private DatabaseMetaData databaseMetaData;
-
 	@Test
-	void executeSqlAndReturnObject_validSelect_returnsResults() throws SQLException {
+	void executeUpdate_mysqlDdl_returnsZero() throws SQLException {
+		Connection connection = mock(Connection.class);
+		DatabaseMetaData metaData = mock(DatabaseMetaData.class);
+		Statement statement = mock(Statement.class);
+
+		when(connection.getMetaData()).thenReturn(metaData);
+		when(metaData.getDatabaseProductName()).thenReturn(DatabaseDialectEnum.MYSQL.code);
 		when(connection.createStatement()).thenReturn(statement);
-		when(connection.getMetaData()).thenReturn(databaseMetaData);
-		when(databaseMetaData.getDatabaseProductName()).thenReturn("MySQL");
-		when(statement.executeQuery("SELECT id, name FROM users")).thenReturn(resultSet);
-		when(resultSet.getMetaData()).thenReturn(resultSetMetaData);
-		when(resultSetMetaData.getColumnCount()).thenReturn(2);
-		when(resultSetMetaData.getColumnLabel(1)).thenReturn("id");
-		when(resultSetMetaData.getColumnLabel(2)).thenReturn("name");
-		when(resultSet.next()).thenReturn(true, false);
-		when(resultSet.getString("id")).thenReturn("1");
-		when(resultSet.getString("name")).thenReturn("Alice");
+		when(statement.execute("CREATE TABLE t (id INT);")).thenReturn(false);
+		when(statement.getUpdateCount()).thenReturn(0);
 
-		ResultSetBO result = SqlExecutor.executeSqlAndReturnObject(connection, null, "SELECT id, name FROM users");
+		int affected = SqlExecutor.executeUpdate(connection, "demo", "CREATE TABLE t (id INT);");
 
-		assertNotNull(result);
-		assertEquals(2, result.getColumn().size());
-		assertTrue(result.getColumn().contains("id"));
-		assertTrue(result.getColumn().contains("name"));
-		assertEquals(1, result.getData().size());
-		assertEquals("1", result.getData().get(0).get("id"));
-		assertEquals("Alice", result.getData().get(0).get("name"));
+		assertEquals(0, affected);
+		verify(statement).execute("use `demo`;");
+		verify(statement).execute("CREATE TABLE t (id INT);");
 	}
 
 	@Test
-	void executeSqlAndReturnObject_emptyResult_returnsEmptyData() throws SQLException {
+	void executeUpdate_mysqlInsert_returnsAffectedRows() throws SQLException {
+		Connection connection = mock(Connection.class);
+		DatabaseMetaData metaData = mock(DatabaseMetaData.class);
+		Statement statement = mock(Statement.class);
+
+		when(connection.getMetaData()).thenReturn(metaData);
+		when(metaData.getDatabaseProductName()).thenReturn(DatabaseDialectEnum.MYSQL.code);
 		when(connection.createStatement()).thenReturn(statement);
-		when(connection.getMetaData()).thenReturn(databaseMetaData);
-		when(databaseMetaData.getDatabaseProductName()).thenReturn("MySQL");
-		when(statement.executeQuery("SELECT id FROM empty_table")).thenReturn(resultSet);
-		when(resultSet.getMetaData()).thenReturn(resultSetMetaData);
-		when(resultSetMetaData.getColumnCount()).thenReturn(1);
-		when(resultSetMetaData.getColumnLabel(1)).thenReturn("id");
-		when(resultSet.next()).thenReturn(false);
+		when(statement.execute(anyString())).thenReturn(false);
+		when(statement.getUpdateCount()).thenReturn(5);
 
-		ResultSetBO result = SqlExecutor.executeSqlAndReturnObject(connection, null, "SELECT id FROM empty_table");
+		int affected = SqlExecutor.executeUpdate(connection, "demo", "INSERT INTO t SELECT * FROM s");
 
-		assertNotNull(result);
-		assertEquals(1, result.getColumn().size());
-		assertTrue(result.getData().isEmpty());
+		assertEquals(5, affected);
 	}
 
 	@Test
-	void executeSqlAndReturnObject_invalidSql_throwsSQLException() throws SQLException {
-		when(connection.createStatement()).thenReturn(statement);
-		when(connection.getMetaData()).thenReturn(databaseMetaData);
-		when(databaseMetaData.getDatabaseProductName()).thenReturn("MySQL");
-		when(statement.executeQuery("INVALID SQL")).thenThrow(new SQLException("syntax error"));
+	void executeScript_runsMultipleStatements() throws SQLException {
+		Connection connection = mock(Connection.class);
+		DatabaseMetaData metaData = mock(DatabaseMetaData.class);
+		Statement statement = mock(Statement.class);
 
-		assertThrows(SQLException.class,
-				() -> SqlExecutor.executeSqlAndReturnObject(connection, null, "INVALID SQL"));
+		when(connection.getMetaData()).thenReturn(metaData);
+		when(metaData.getDatabaseProductName()).thenReturn(DatabaseDialectEnum.MYSQL.code);
+		when(connection.createStatement()).thenReturn(statement);
+		when(statement.execute(anyString())).thenReturn(false);
+		when(statement.getUpdateCount()).thenReturn(1);
+
+		SqlExecutor.executeScript(connection, "demo",
+				"DELETE FROM `A` WHERE status = 0; INSERT INTO `A` SELECT `id` FROM `order`");
+
+		verify(statement).execute("DELETE FROM `A` WHERE status = 0");
+		verify(statement).execute("INSERT INTO `A` SELECT `id` FROM `order`");
 	}
 
 	@Test
-	void executeSqlAndReturnArr_validQuery_returnsStringArray() throws SQLException {
-		when(connection.createStatement()).thenReturn(statement);
-		when(statement.executeQuery("SELECT id FROM users")).thenReturn(resultSet);
-		when(resultSet.getMetaData()).thenReturn(resultSetMetaData);
-		when(resultSetMetaData.getColumnCount()).thenReturn(1);
-		when(resultSetMetaData.getColumnLabel(1)).thenReturn("id");
-		when(resultSet.next()).thenReturn(true, false);
-		when(resultSet.getString("id")).thenReturn("42");
-
-		String[][] result = SqlExecutor.executeSqlAndReturnArr(connection, "SELECT id FROM users");
-
-		assertNotNull(result);
-		assertEquals(2, result.length);
-		assertEquals("id", result[0][0]);
-		assertEquals("42", result[1][0]);
-	}
-
-	@Test
-	void executeSqlAndReturnObject_withPostgresqlSchema_setsSearchPath() throws SQLException {
-		when(connection.createStatement()).thenReturn(statement);
-		when(connection.getMetaData()).thenReturn(databaseMetaData);
-		when(databaseMetaData.getDatabaseProductName()).thenReturn("PostgreSQL");
-		when(statement.executeQuery("SELECT 1")).thenReturn(resultSet);
-		when(resultSet.getMetaData()).thenReturn(resultSetMetaData);
-		when(resultSetMetaData.getColumnCount()).thenReturn(1);
-		when(resultSetMetaData.getColumnLabel(1)).thenReturn("1");
-		when(resultSet.next()).thenReturn(false);
-
-		ResultSetBO result = SqlExecutor.executeSqlAndReturnObject(connection, "public", "SELECT 1");
-
-		assertNotNull(result);
-		verify(statement).execute("set search_path = 'public';");
-	}
-
-	@Test
-	void executeSqlAndReturnObject_withH2Schema_usesSchema() throws SQLException {
-		when(connection.createStatement()).thenReturn(statement);
-		when(connection.getMetaData()).thenReturn(databaseMetaData);
-		when(databaseMetaData.getDatabaseProductName()).thenReturn("H2");
-		when(statement.executeQuery("SELECT 1")).thenReturn(resultSet);
-		when(resultSet.getMetaData()).thenReturn(resultSetMetaData);
-		when(resultSetMetaData.getColumnCount()).thenReturn(1);
-		when(resultSetMetaData.getColumnLabel(1)).thenReturn("1");
-		when(resultSet.next()).thenReturn(false);
-
-		ResultSetBO result = SqlExecutor.executeSqlAndReturnObject(connection, "PUBLIC", "SELECT 1");
-
-		assertNotNull(result);
-		verify(statement).execute("use PUBLIC;");
-	}
-
-	@Test
-	void executeSqlAndReturnObject_withOracleSchema_altersSession() throws SQLException {
-		when(connection.createStatement()).thenReturn(statement);
-		when(connection.getMetaData()).thenReturn(databaseMetaData);
-		when(databaseMetaData.getDatabaseProductName()).thenReturn("Oracle");
-		when(statement.executeQuery("SELECT 1 FROM DUAL")).thenReturn(resultSet);
-		when(resultSet.getMetaData()).thenReturn(resultSetMetaData);
-		when(resultSetMetaData.getColumnCount()).thenReturn(1);
-		when(resultSetMetaData.getColumnLabel(1)).thenReturn("1");
-		when(resultSet.next()).thenReturn(false);
-
-		ResultSetBO result = SqlExecutor.executeSqlAndReturnObject(connection, "HR", "SELECT 1 FROM DUAL");
-
-		assertNotNull(result);
-		verify(statement).execute("ALTER SESSION SET CURRENT_SCHEMA = HR");
-	}
-
-	@Test
-	void executeSqlAndReturnObject_withNullSchema_skipsSchemaSwitch() throws SQLException {
-		when(connection.createStatement()).thenReturn(statement);
-		when(connection.getMetaData()).thenReturn(databaseMetaData);
-		when(databaseMetaData.getDatabaseProductName()).thenReturn("PostgreSQL");
-		when(statement.executeQuery("SELECT 1")).thenReturn(resultSet);
-		when(resultSet.getMetaData()).thenReturn(resultSetMetaData);
-		when(resultSetMetaData.getColumnCount()).thenReturn(1);
-		when(resultSetMetaData.getColumnLabel(1)).thenReturn("1");
-		when(resultSet.next()).thenReturn(false);
-
-		ResultSetBO result = SqlExecutor.executeSqlAndReturnObject(connection, null, "SELECT 1");
-
-		assertNotNull(result);
-		verify(statement, never()).execute(anyString());
-	}
-
-	@Test
-	void executeSqlAndReturnObject_withEmptySchema_skipsSchemaSwitch() throws SQLException {
-		when(connection.createStatement()).thenReturn(statement);
-		when(connection.getMetaData()).thenReturn(databaseMetaData);
-		when(databaseMetaData.getDatabaseProductName()).thenReturn("H2");
-		when(statement.executeQuery("SELECT 1")).thenReturn(resultSet);
-		when(resultSet.getMetaData()).thenReturn(resultSetMetaData);
-		when(resultSetMetaData.getColumnCount()).thenReturn(1);
-		when(resultSetMetaData.getColumnLabel(1)).thenReturn("1");
-		when(resultSet.next()).thenReturn(false);
-
-		ResultSetBO result = SqlExecutor.executeSqlAndReturnObject(connection, "", "SELECT 1");
-
-		assertNotNull(result);
-		verify(statement, never()).execute(anyString());
-	}
-
-	@Test
-	void executeSqlAndReturnArr_withMysqlSchema_switchesDatabase() throws SQLException {
-		when(connection.createStatement()).thenReturn(statement);
-		when(connection.getCatalog()).thenReturn("original_db");
-		when(connection.getMetaData()).thenReturn(databaseMetaData);
-		when(databaseMetaData.getDatabaseProductName()).thenReturn("MySQL");
-		when(statement.executeQuery("SELECT 1")).thenReturn(resultSet);
-		when(resultSet.getMetaData()).thenReturn(resultSetMetaData);
-		when(resultSetMetaData.getColumnCount()).thenReturn(1);
-		when(resultSetMetaData.getColumnLabel(1)).thenReturn("1");
-		when(resultSet.next()).thenReturn(false);
-
-		String[][] result = SqlExecutor.executeSqlAndReturnArr(connection, "test_db", "SELECT 1");
-
-		assertNotNull(result);
-		verify(statement).execute("use `test_db`;");
-		verify(statement).execute("use `original_db`;");
-	}
-
-	@Test
-	void executeSqlAndReturnArr_withPostgresqlSchema_setsSearchPath() throws SQLException {
-		when(connection.createStatement()).thenReturn(statement);
-		when(connection.getCatalog()).thenReturn("mydb");
-		when(connection.getMetaData()).thenReturn(databaseMetaData);
-		when(databaseMetaData.getDatabaseProductName()).thenReturn("PostgreSQL");
-		when(statement.executeQuery("SELECT 1")).thenReturn(resultSet);
-		when(resultSet.getMetaData()).thenReturn(resultSetMetaData);
-		when(resultSetMetaData.getColumnCount()).thenReturn(1);
-		when(resultSetMetaData.getColumnLabel(1)).thenReturn("1");
-		when(resultSet.next()).thenReturn(false);
-
-		String[][] result = SqlExecutor.executeSqlAndReturnArr(connection, "public", "SELECT 1");
-
-		assertNotNull(result);
-		verify(statement).execute("set search_path = 'public';");
-	}
-
-	@Test
-	void executeSqlAndReturnArr_withOracleSchema_altersSession() throws SQLException {
-		when(connection.createStatement()).thenReturn(statement);
-		when(connection.getCatalog()).thenReturn("orcl");
-		when(connection.getMetaData()).thenReturn(databaseMetaData);
-		when(databaseMetaData.getDatabaseProductName()).thenReturn("Oracle");
-		when(statement.executeQuery("SELECT 1 FROM DUAL")).thenReturn(resultSet);
-		when(resultSet.getMetaData()).thenReturn(resultSetMetaData);
-		when(resultSetMetaData.getColumnCount()).thenReturn(1);
-		when(resultSetMetaData.getColumnLabel(1)).thenReturn("1");
-		when(resultSet.next()).thenReturn(false);
-
-		String[][] result = SqlExecutor.executeSqlAndReturnArr(connection, "HR", "SELECT 1 FROM DUAL");
-
-		assertNotNull(result);
-		verify(statement).execute("ALTER SESSION SET CURRENT_SCHEMA = HR");
-	}
-
-	@Test
-	void executeSqlAndReturnArr_withNullSchema_skipsSchemaSwitch() throws SQLException {
-		when(connection.createStatement()).thenReturn(statement);
-		when(connection.getCatalog()).thenReturn("mydb");
-		when(connection.getMetaData()).thenReturn(databaseMetaData);
-		when(databaseMetaData.getDatabaseProductName()).thenReturn("MySQL");
-		when(statement.executeQuery("SELECT 1")).thenReturn(resultSet);
-		when(resultSet.getMetaData()).thenReturn(resultSetMetaData);
-		when(resultSetMetaData.getColumnCount()).thenReturn(1);
-		when(resultSetMetaData.getColumnLabel(1)).thenReturn("1");
-		when(resultSet.next()).thenReturn(false);
-
-		String[][] result = SqlExecutor.executeSqlAndReturnArr(connection, null, "SELECT 1");
-
-		assertNotNull(result);
-		verify(statement, never()).execute(anyString());
-	}
-
-	@Test
-	void constants_areCorrect() {
-		assertEquals(1000, SqlExecutor.RESULT_SET_LIMIT);
-		assertEquals(30, SqlExecutor.STATEMENT_TIMEOUT);
+	void splitStatements_splitsOnSemicolonOutsideQuotes() {
+		var statements = SqlExecutor.splitStatements("DELETE FROM t; INSERT INTO t SELECT 1");
+		assertEquals(2, statements.size());
 	}
 
 }

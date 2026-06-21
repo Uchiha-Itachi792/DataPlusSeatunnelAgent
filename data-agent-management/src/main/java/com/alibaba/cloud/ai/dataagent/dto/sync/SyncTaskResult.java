@@ -27,7 +27,12 @@ public class SyncTaskResult {
 
 	public enum Type {
 
-		INSERT_SQL, CREATE_SQL, ERROR
+		/** @deprecated 保留兼容，新流程统一使用 SYNC_SQL */
+		INSERT_SQL,
+		/** @deprecated 保留兼容，新流程统一使用 SYNC_SQL */
+		CREATE_SQL,
+		SYNC_SQL,
+		ERROR
 
 	}
 
@@ -37,16 +42,48 @@ public class SyncTaskResult {
 
 	private final String sql;
 
+	private final String sourceTable;
+
+	private final String targetTable;
+
+	private final Integer datasourceId;
+
 	public static SyncTaskResult error(String message) {
 		return SyncTaskResult.builder().type(Type.ERROR).message(message).build();
 	}
 
-	public static SyncTaskResult insertSql(String sql) {
-		return SyncTaskResult.builder().type(Type.INSERT_SQL).sql(sql).build();
+	public static SyncTaskResult syncSql(String sql, String sourceTable, String targetTable, Integer datasourceId) {
+		return SyncTaskResult.builder()
+			.type(Type.SYNC_SQL)
+			.sql(sql)
+			.sourceTable(sourceTable)
+			.targetTable(targetTable)
+			.datasourceId(datasourceId)
+			.build();
 	}
 
-	public static SyncTaskResult createSql(String sql) {
-		return SyncTaskResult.builder().type(Type.CREATE_SQL).sql(sql).build();
+	public static SyncTaskResult insertSql(String sql, String sourceTable, String targetTable, Integer datasourceId) {
+		return SyncTaskResult.builder()
+			.type(Type.INSERT_SQL)
+			.sql(sql)
+			.sourceTable(sourceTable)
+			.targetTable(targetTable)
+			.datasourceId(datasourceId)
+			.build();
+	}
+
+	public static SyncTaskResult createSql(String sql, String sourceTable, String targetTable, Integer datasourceId) {
+		return SyncTaskResult.builder()
+			.type(Type.CREATE_SQL)
+			.sql(sql)
+			.sourceTable(sourceTable)
+			.targetTable(targetTable)
+			.datasourceId(datasourceId)
+			.build();
+	}
+
+	public boolean isSuccess() {
+		return type != Type.ERROR && sql != null && !sql.isBlank();
 	}
 
 }

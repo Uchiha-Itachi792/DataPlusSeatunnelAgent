@@ -72,6 +72,17 @@ const routes = [
     },
   },
 
+  // SQL 审批模块
+  {
+    path: '/sql-check',
+    name: 'SqlApproval',
+    component: () => import('@/views/SqlApproval.vue'),
+    meta: {
+      title: 'SQL审批',
+      module: 'approval',
+    },
+  },
+
   // 404页面
   {
     path: '/:pathMatch(.*)*',

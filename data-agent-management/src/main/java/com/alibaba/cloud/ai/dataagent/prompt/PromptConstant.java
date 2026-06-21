@@ -34,6 +34,11 @@ public class PromptConstant {
 		return new PromptTemplate(PromptLoader.loadPrompt("sync-intent-parse"));
 	}
 
+	// sync-sql-generate
+	public static PromptTemplate getSyncSqlGeneratePromptTemplate() {
+		return new PromptTemplate(PromptLoader.loadPrompt("sync-sql-generate"));
+	}
+
 	// evidence-query-rewrite
 	public static PromptTemplate getEvidenceQueryRewritePromptTemplate() {
 		return new PromptTemplate(PromptLoader.loadPrompt("evidence-query-rewrite"));

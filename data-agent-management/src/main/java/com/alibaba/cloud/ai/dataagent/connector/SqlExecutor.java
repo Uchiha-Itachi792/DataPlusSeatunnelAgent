@@ -25,6 +25,7 @@ import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -35,6 +36,105 @@ public class SqlExecutor {
 	public static final Integer RESULT_SET_LIMIT = 1000;
 
 	public static final Integer STATEMENT_TIMEOUT = 30;
+
+	/**
+	 * Execute DDL/DML statement (CREATE TABLE, INSERT, etc.) and return affected rows if
+	 * applicable.
+	 * @param connection database connection
+	 * @param schema database schema
+	 * @param sql SQL statement
+	 * @return affected row count, or 0 for DDL
+	 * @throws SQLException SQL execution exception
+	 */
+	public static int executeUpdate(Connection connection, String schema, String sql) throws SQLException {
+		try (Statement statement = connection.createStatement()) {
+			statement.setQueryTimeout(STATEMENT_TIMEOUT);
+
+			DatabaseMetaData metaData = connection.getMetaData();
+			String dialect = metaData.getDatabaseProductName();
+
+			if (dialect.equals(DatabaseDialectEnum.POSTGRESQL.code)) {
+				if (StringUtils.isNotEmpty(schema)) {
+					statement.execute("set search_path = '" + schema + "';");
+				}
+			}
+			else if (dialect.equals(DatabaseDialectEnum.H2.code)) {
+				if (StringUtils.isNotEmpty(schema)) {
+					statement.execute("use " + schema + ";");
+				}
+			}
+			else if (dialect.equals(DatabaseDialectEnum.ORACLE.code)) {
+				if (StringUtils.isNotEmpty(schema)) {
+					statement.execute("ALTER SESSION SET CURRENT_SCHEMA = " + schema);
+				}
+			}
+			else if (dialect.equals(DatabaseDialectEnum.MYSQL.code)) {
+				if (StringUtils.isNotEmpty(schema)) {
+					statement.execute("use `" + schema + "`;");
+				}
+			}
+
+			boolean hasResultSet = statement.execute(sql);
+			if (hasResultSet) {
+				return 0;
+			}
+			return statement.getUpdateCount();
+		}
+	}
+
+	/**
+	 * Execute a multi-statement SQL script (statements separated by {@code ;}).
+	 * @param connection database connection
+	 * @param schema database schema
+	 * @param sqlScript SQL script
+	 * @throws SQLException SQL execution exception
+	 */
+	public static void executeScript(Connection connection, String schema, String sqlScript) throws SQLException {
+		for (String statement : splitStatements(sqlScript)) {
+			executeUpdate(connection, schema, statement);
+		}
+	}
+
+	static List<String> splitStatements(String sqlScript) {
+		List<String> statements = new ArrayList<>();
+		if (StringUtils.isBlank(sqlScript)) {
+			return statements;
+		}
+		StringBuilder current = new StringBuilder();
+		boolean inSingleQuote = false;
+		boolean inDoubleQuote = false;
+		boolean inBacktick = false;
+
+		for (int i = 0; i < sqlScript.length(); i++) {
+			char c = sqlScript.charAt(i);
+			if (c == '\'' && !inDoubleQuote && !inBacktick) {
+				inSingleQuote = !inSingleQuote;
+			}
+			else if (c == '"' && !inSingleQuote && !inBacktick) {
+				inDoubleQuote = !inDoubleQuote;
+			}
+			else if (c == '`' && !inSingleQuote && !inDoubleQuote) {
+				inBacktick = !inBacktick;
+			}
+
+			if (c == ';' && !inSingleQuote && !inDoubleQuote && !inBacktick) {
+				appendStatement(statements, current);
+				current.setLength(0);
+			}
+			else {
+				current.append(c);
+			}
+		}
+		appendStatement(statements, current);
+		return statements;
+	}
+
+	private static void appendStatement(List<String> statements, StringBuilder current) {
+		String stmt = current.toString().trim();
+		if (StringUtils.isNotBlank(stmt)) {
+			statements.add(stmt);
+		}
+	}
 
 	/**
 	 * Execute SQL query and return structured results (with column information)
