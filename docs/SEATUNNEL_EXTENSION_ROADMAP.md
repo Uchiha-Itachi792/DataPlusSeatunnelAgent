@@ -9,9 +9,12 @@
 flowchart TB
   subgraph DataAgent["DataAgent（生成侧）"]
     A[用户自然语言] --> B[意图识别]
-    B -->|《数据同步任务》| C[解析源/目标 + 数据源映射]
-    C --> D[生成 SeaTunnel conf]
-    D --> E[(MySQL 任务表)]
+    B -->|《SeaTunnel同步任务》| C[SeatunnelConfigGenerateNode]
+    B -->|《数据同步任务》| C2[SyncTaskNode 保留不变]
+    C --> C3[解析源/目标 + 数据源映射]
+    C3 --> D[生成 SeaTunnel conf]
+    D --> E[(seatunnel_task)]
+    C2 --> E2[(sql_check)]
   end
 
   subgraph Frontend["前端（审核侧）"]
@@ -31,7 +34,7 @@ flowchart TB
 
 | 步骤 | 职责 | 落点 |
 |------|------|------|
-| **1. 意图识别扩展** | 判断是否为数据同步，路由到 conf 生成链，**不走**完整 NL2SQL/Planner | `IntentRecognitionDispatcher` + 独立短链 |
+| **1. 意图识别扩展** | 新增《SeaTunnel同步任务》分类，路由到 conf 生成短链；现有《数据同步任务》仍走 `SyncTaskNode`，**互不影响** | `IntentRecognitionDispatcher` + 新建 `SeatunnelConfigGenerateNode` |
 | **2. conf 落 MySQL** | 生成 HOCON/JSON 配置，写入任务表（含源/目标、状态、快照） | 新建 `seatunnel_task` 表 + Service |
 | **3. 页面人工审核** | 列表展示 conf，支持预览、忽略、批准执行 | 前端任务中心页 |
 | **4. 独立服务执行** | 审核通过后，DataAgent 读库并调用 SeaTunnel 服务 API 提交作业 | 独立部署的 SeaTunnel Gateway |
@@ -72,19 +75,51 @@ flowchart TB
 
 ---
 
+## 意图路由：方案 A（双链路并行，推荐）
+
+**不修改**现有 `SyncTaskNode`，新建独立 Node 与意图分类，两条同步链路长期并存：
+
+| 意图分类 | 路由目标 | 产出 | 审批表 | 执行方式 |
+|---------|---------|------|--------|---------|
+| `《数据同步任务》`（已有） | `SyncTaskNode` | MySQL 同步 SQL | `sql_check` | `SqlCheckService` 数据源直连执行 |
+| `《SeaTunnel同步任务》`（新增） | `SeatunnelConfigGenerateNode` | SeaTunnel HOCON conf | `seatunnel_task` | `SeatunnelTaskService` 调 Gateway API |
+
+```mermaid
+flowchart LR
+  IR[IntentRecognitionNode]
+  IR -->|《数据同步任务》| ST[SyncTaskNode]
+  IR -->|《SeaTunnel同步任务》| SC[SeatunnelConfigGenerateNode]
+  IR -->|《数据分析》等| EA[EvidenceRecallNode ...]
+  ST --> SQL[(sql_check)]
+  SC --> CONF[(seatunnel_task)]
+  ST --> END1[END]
+  SC --> END2[END]
+```
+
+**实施要点：**
+
+- `intent-recognition.txt`：增加 `《SeaTunnel同步任务》` 定义与 few-shot，与 `《数据同步任务》` 区分（跨库大批量、需 SeaTunnel 引擎等场景走后者）。
+- `Constant.java`：新增 `INTENT_CLASSIFICATION_SEATUNNEL_SYNC_TASK`、`SEATUNNEL_CONFIG_GENERATE_NODE` 等常量。
+- `IntentRecognitionDispatcher`：在现有 `SYNC_TASK_NODE` 分支旁**新增** `SEATUNNEL_CONFIG_GENERATE_NODE` 分支；`SyncTaskNode` 相关代码零改动。
+- `DataAgentConfiguration`：注册新 Node，`addConditionalEdges` 增加新路由；新 Node 完成后直接 `END`。
+
+---
+
 ## 与现有代码的关系
 
-项目里已有一套**高度相似**的 SQL 审批链路，可直接作为 SeaTunnel 任务的模板：
+项目里已有一套**高度相似**的 SQL 审批链路，作为 SeaTunnel 任务的**实现模板**（复制模式，不替换原链路）：
 
-| 已有能力 | 路径 | SeaTunnel 对应 |
-|---------|------|----------------|
-| 意图 → 同步分支 | `IntentRecognitionDispatcher` → `SyncTaskNode` | 保留路由，节点改为生成 conf |
-| 审批表 | `sql_check` 表 | 新建 `seatunnel_task` 表 |
-| 持久化 + 执行 | `SqlCheckService` | `SeatunnelTaskService` |
-| REST API | `SqlCheckController` `/api/sql-check` | `SeatunnelTaskController` `/api/seatunnel-task` |
-| 前端审核页 | `SqlApproval.vue` + `sqlCheck.ts` | `SeatunnelTask.vue` + `seatunnelTask.ts` |
+| 已有能力（保留不变） | 路径 | SeaTunnel 新建对应 |
+|-------------------|------|-------------------|
+| 意图 → SQL 同步分支 | `IntentRecognitionDispatcher` → `SyncTaskNode` | **不动**；另增 → `SeatunnelConfigGenerateNode` |
+| SQL 审批表 | `sql_check` 表 | 新建 `seatunnel_task` 表 |
+| SQL 持久化 + 执行 | `SqlCheckService` | `SeatunnelTaskService` |
+| SQL REST API | `SqlCheckController` `/api/sql-check` | `SeatunnelTaskController` `/api/seatunnel-task` |
+| SQL 前端审核页 | `SqlApproval.vue` + `sqlCheck.ts` | `SeatunnelTask.vue` + `seatunnelTask.ts` |
 
-当前 `SyncTaskNode` 生成的是 **MySQL 同步 SQL** 并写入 `sql_check`；目标演进为生成 **SeaTunnel HOCON conf** 并写入 `seatunnel_task`。`SqlCheckService.execute()` 当前在 Agent 数据源上直接跑 SQL；SeaTunnel 版本改为调用**外部 Gateway API**。
+`SyncTaskNode` 继续生成 **MySQL 同步 SQL** 并写入 `sql_check`；新建的 `SeatunnelConfigGenerateNode` 负责生成 **SeaTunnel HOCON conf** 并写入 `seatunnel_task`。`SqlCheckService.execute()` 保持数据源直连执行；SeaTunnel 执行走**外部 Gateway API**。
+
+`SeatunnelConfigGenerateNode` 可复用 `TableSyncService` 中「解析源/目标表、校验表是否存在」等逻辑，但**不继承、不修改** `SyncTaskNode` 类本身。
 
 `CliExecutorService` / `CliEchoNode` 可作为**本地开发验证**工具保留，但**不是生产执行路径**。
 
@@ -96,10 +131,10 @@ flowchart TB
 
 | # | 扩展项 | 说明 |
 |---|--------|------|
-| **1** | **意图识别扩展** | `intent-recognition.txt` 增加《数据同步任务》；`IntentRecognitionDispatcher` 路由到 conf 生成短链 |
-| **2** | **独立短链（跳过 NL2SQL）** | 同步意图不进 Schema/Planner/Feasibility，省 token、降延迟 |
+| **1** | **意图识别扩展（方案 A）** | `intent-recognition.txt` 新增《SeaTunnel同步任务》；`IntentRecognitionDispatcher` 新增分支 → `SeatunnelConfigGenerateNode`；`《数据同步任务》` → `SyncTaskNode` 保持不变 |
+| **2** | **独立短链（跳过 NL2SQL）** | 《SeaTunnel同步任务》不进 Schema/Planner/Feasibility，省 token、降延迟 |
 | **3** | **数据源 → Connector 映射** | 复用 `Datasource` + `DatasourceTypeHandler`，生成 source/sink JDBC 片段 |
-| **4** | **conf 生成 Service** | `SeatunnelConfigBuilder`（模板）+ `SeatunnelConfigGenerateNode`（LLM 补表名、字段、过滤条件） |
+| **4** | **新建 conf 生成 Node** | `SeatunnelConfigBuilder`（模板）+ **新建** `SeatunnelConfigGenerateNode`（LLM 补表名、字段、过滤条件）；**不修改** `SyncTaskNode` |
 | **5** | **MySQL 任务表** | `seatunnel_task`：conf 全文、源/目标表、数据源 ID、状态、外部 job_id、错误信息 |
 | **6** | **任务 Service + REST** | 保存、列表、执行、忽略；执行时读 conf 调 Gateway |
 | **7** | **前端审核页** | 列表 + conf 预览 + 执行/忽略（参考 `SqlApproval.vue`） |
@@ -136,19 +171,23 @@ flowchart TB
 - `SqlCheckController` → `SqlApproval.vue` → 执行/忽略
 - `GraphServiceImpl` SSE 与 `IntentRecognitionDispatcher` 路由
 
-**产出：** 明确「把 SQL 换成 conf、把 SqlExecutor 换成 Gateway」要改哪些类。
+**产出：** 明确「在现有 SQL 链路旁**并行新建** SeaTunnel 链路」要新增哪些类；`SyncTaskNode` 不在改动范围内。
 
 ---
 
 ### 阶段 1：意图识别 + conf 生成 + 落库（5～7 天）
 
 ```
-扩展 intent-recognition.txt              # 《数据同步任务》
-IntentRecognitionDispatcher              # 已有同步分支，指向新节点
+扩展 intent-recognition.txt              # 新增《SeaTunnel同步任务》（与《数据同步任务》区分）
+Constant.java                            # INTENT_CLASSIFICATION_SEATUNNEL_SYNC_TASK、SEATUNNEL_CONFIG_GENERATE_NODE
+IntentRecognitionDispatcher              # 新增分支 → SeatunnelConfigGenerateNode；SyncTaskNode 分支不动
+DataAgentConfiguration                   # 注册新 Node + 条件边；新 Node → END
 SeatunnelConfigBuilder                   # Datasource → source/sink HOCON 片段
-SeatunnelConfigGenerateNode              # 替换/演进 SyncTaskNode：生成 conf 而非 SQL
+SeatunnelConfigGenerateNode              # 新建 Node（参考 SyncTaskNode 结构，生成 conf 而非 SQL）
 seatunnel_task 表 + Entity + Mapper
 SeatunnelTaskService.save()              # 参考 SqlCheckService.save()
+SeatunnelConfigGenerateNodeTest          # 单元测试
+IntentRecognitionDispatcherTest          # 补充《SeaTunnel同步任务》路由用例
 ```
 
 **建议表结构（`seatunnel_task`）：**
@@ -164,7 +203,8 @@ error_msg, create_time, exec_time, update_time
 
 **验收：**
 
-- 输入「把 A 库 orders 同步到 B 库」→ 意图走短链 → MySQL 出现一条 `PENDING` 记录，conf 内容正确（先 MySQL→MySQL 单表）。
+- 输入「用 SeaTunnel 把 A 库 orders 同步到 B 库」→ 意图识别为《SeaTunnel同步任务》→ 走 `SeatunnelConfigGenerateNode` → `seatunnel_task` 出现一条 `PENDING` 记录，conf 内容正确（先 MySQL→MySQL 单表）。
+- 输入同类 SQL 同步诉求 → 仍识别为《数据同步任务》→ `SyncTaskNode` → `sql_check`，行为与改动前一致。
 
 ---
 
@@ -231,7 +271,7 @@ MCP Tool（可选）
 用户                DataAgent Graph          MySQL           审核页              Gateway
  │                       │                    │                │                    │
  │──"同步 orders 到 B"──▶│                    │                │                    │
- │                       │──意图=数据同步──────│                │                    │
+ │                       │──意图=SeaTunnel同步─│                │                    │
  │                       │──生成 conf─────────▶│ INSERT PENDING │                    │
  │◀──SSE: 已提交审核─────│                    │                │                    │
  │                       │                    │                │                    │
@@ -290,7 +330,8 @@ spring:
 | 扩展 | 原因 |
 |------|------|
 | DataAgent 内嵌 `seatunnel.sh` 作为生产执行 | 与独立服务架构冲突；仅适合 Gateway 内部或本地调试 |
-| 大改 Intent 全套多分类 | 先做「同步 vs 分析」二分即可 |
+| 修改或替换 `SyncTaskNode` | 方案 A 要求 SQL 链路与 SeaTunnel 链路并行；新建 Node 即可 |
+| 大改 Intent 全套多分类 | 本阶段仅新增《SeaTunnel同步任务》一个分类，保留现有《数据同步任务》 |
 | 一上来 Kafka / 多 Connector | 先用 MySQL→MySQL 打通 conf 生成与审核执行 |
 | Graph 内 Human Feedback 阻塞等人 | 本架构用页面审核，Graph 应快速结束 |
 | 完整作业调度平台（队列、DAG） | 先单任务同步执行 + 状态回写，再考虑队列 |
@@ -302,9 +343,11 @@ spring:
 
 | 你要扩展的 | 现有参考 |
 |-----------|----------|
-| 意图路由 | `IntentRecognitionDispatcher`、`SyncTaskDispatcher` |
-| 同步任务 Node | `SyncTaskNode`（演进为 conf 生成） |
-| 审批表 + 执行 | `sql_check`、`SqlCheckService`、`SqlCheckController` |
+| 意图路由（方案 A） | `IntentRecognitionDispatcher`：新增 SeaTunnel 分支；`SyncTaskDispatcher` 仅服务 SQL 链路 |
+| SQL 同步 Node（保留） | `SyncTaskNode` → `sql_check`（不改动） |
+| SeaTunnel 同步 Node（新建） | `SeatunnelConfigGenerateNode`（参考 `SyncTaskNode` 结构） |
+| SQL 审批表 + 执行 | `sql_check`、`SqlCheckService`、`SqlCheckController`（保留） |
+| SeaTunnel 审批表 + 执行 | `seatunnel_task`、`SeatunnelTaskService`、`SeatunnelTaskController`（新建） |
 | 前端审核页 | `SqlApproval.vue`、`sqlCheck.ts` |
 | 数据源映射 | `Datasource`、`MysqlDatasourceTypeHandler.toDbConfig()` |
 | 工作流 Node 规范 | `.cursor/rules/backend-workflow-node.mdc` |
@@ -331,6 +374,6 @@ spring:
 
 ## 一句话总结
 
-**按「意图分流 → 生成 conf 落 MySQL → 页面审核 → 独立 SeaTunnel 服务执行」推进。** 复用现有 `sql_check` 审批模式，把「SQL 快照」换成「conf 快照」，把「数据源直连执行」换成「Gateway API」。生成在 DataAgent Graph 内完成，执行在独立服务中完成，MySQL 贯穿全程作为任务与审计中心。
+**按「方案 A：新增《SeaTunnel同步任务》意图 → 新建 `SeatunnelConfigGenerateNode` → conf 落 MySQL → 页面审核 → 独立 SeaTunnel 服务执行」推进。** 现有 `SyncTaskNode` + `sql_check` SQL 审批链路**完整保留**；SeaTunnel 链路**复制其模式**新建，执行走 Gateway API。两条链路通过意图分类分流，互不影响。
 
-**建议起步：** 阶段 1 的 `SeatunnelConfigBuilder` + `seatunnel_task` 表 + 演进 `SyncTaskNode`——在现有意图路由已通的前提下，先验证 conf 生成与落库是否正确。
+**建议起步：** 阶段 1 的 `intent-recognition.txt` 新分类 + `SeatunnelConfigBuilder` + **新建** `SeatunnelConfigGenerateNode` + `seatunnel_task` 表——先验证《SeaTunnel同步任务》能正确生成 conf 并落库，同时确认《数据同步任务》仍走 `SyncTaskNode` 不受影响。
