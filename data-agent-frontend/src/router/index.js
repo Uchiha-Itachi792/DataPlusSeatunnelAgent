@@ -44,7 +44,7 @@ router.beforeEach(async (to, from, next) => {
     document.title = 'Spring AI Alibaba Data Agent';
   }
 
-  if (to.path === '/model-config' || to.path === '/sql-check') {
+  if (to.path === '/model-config' || to.path === '/sql-check' || to.path === '/seatunnel-task') {
     console.log(`导航到: ${to.path} (${to.name})`);
     next();
     return;

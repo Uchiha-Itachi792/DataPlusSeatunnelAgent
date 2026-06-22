@@ -54,6 +54,11 @@ spring:
             bucket-name: ${OSS_BUCKET_NAME:}
             custom-domain: ${OSS_CUSTOM_DOMAIN:}
         max-sql-retry-count: 10
+        # 独立 SeaTunnel Gateway 服务（为空时执行接口返回明确错误）
+        seatunnel-gateway:
+          base-url: ""
+          submit-timeout-ms: 30000
+          api-key: ""
         # Langfuse 可观测性配置
         langfuse:
           enabled: ${LANGFUSE_ENABLED:false}

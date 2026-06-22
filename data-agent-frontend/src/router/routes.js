@@ -83,6 +83,17 @@ const routes = [
     },
   },
 
+  // SeaTunnel 任务审批模块
+  {
+    path: '/seatunnel-task',
+    name: 'SeatunnelTask',
+    component: () => import('@/views/SeatunnelTask.vue'),
+    meta: {
+      title: 'SeaTunnel任务',
+      module: 'approval',
+    },
+  },
+
   // 404页面
   {
     path: '/:pathMatch(.*)*',

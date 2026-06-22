@@ -29,6 +29,8 @@ public enum TextType {
 	// LLM模型爱输出```sql，那就换一个标记
 	SQL("$$$sql", "$$$"),
 
+	CONFIG("$$$config", "$$$"),
+
 	MARK_DOWN("$$$markdown-report", "$$$/markdown-report"),
 
 	RESULT_SET("$$$result_set", "$$$"),

@@ -23,8 +23,10 @@ import lombok.extern.slf4j.Slf4j;
 
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.EVIDENCE_RECALL_NODE;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_CLASSIFICATION_CHAT;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_CLASSIFICATION_SEATUNNEL_SYNC_TASK;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_CLASSIFICATION_SYNC_TASK;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_RECOGNITION_NODE_OUTPUT;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.SEATUNNEL_CONFIG_GENERATE_NODE;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.SYNC_TASK_NODE;
 import static com.alibaba.cloud.ai.graph.StateGraph.END;
 
@@ -51,6 +53,10 @@ public class IntentRecognitionDispatcher implements EdgeAction {
 		if (INTENT_CLASSIFICATION_CHAT.equals(classification)) {
 			log.warn("Intent classified as chat or irrelevant, ending conversation");
 			return END;
+		}
+		if (INTENT_CLASSIFICATION_SEATUNNEL_SYNC_TASK.equals(classification)) {
+			log.info("Intent classified as SeaTunnel sync task, proceeding to SeatunnelConfigGenerateNode");
+			return SEATUNNEL_CONFIG_GENERATE_NODE;
 		}
 		if (INTENT_CLASSIFICATION_SYNC_TASK.equals(classification)) {
 			log.info("Intent classified as data sync task, proceeding to SyncTaskNode");

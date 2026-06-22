@@ -105,10 +105,19 @@ public final class Constant {
 
 	public static final String INTENT_CLASSIFICATION_SYNC_TASK = "《数据同步任务》";
 
+	public static final String INTENT_CLASSIFICATION_SEATUNNEL_SYNC_TASK = "《SeaTunnel同步任务》";
+
 	// 数据同步节点
 	public static final String SYNC_TASK_NODE = "SYNC_TASK_NODE";
 
 	public static final String SYNC_TASK_NODE_OUTPUT = "SYNC_TASK_NODE_OUTPUT";
+
+	// SeaTunnel conf 生成节点
+	public static final String SEATUNNEL_CONFIG_GENERATE_NODE = "SEATUNNEL_CONFIG_GENERATE_NODE";
+
+	public static final String SEATUNNEL_CONFIG_GENERATE_NODE_OUTPUT = "SEATUNNEL_CONFIG_GENERATE_NODE_OUTPUT";
+
+	public static final String SEATUNNEL_UNSUPPORTED_DATASOURCE_MSG = "当前仅支持 MySQL 数据源的 SeaTunnel conf 生成";
 
 	public static final String SYNC_COLUMN_MISMATCH_MSG = "字段名字不一致，无法同步";
 

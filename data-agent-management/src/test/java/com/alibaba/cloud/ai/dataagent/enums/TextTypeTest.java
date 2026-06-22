@@ -23,7 +23,7 @@ class TextTypeTest {
 
 	@Test
 	void enumValues_haveCorrectCount() {
-		assertEquals(6, TextType.values().length);
+		assertEquals(7, TextType.values().length);
 	}
 
 	@Test
@@ -42,6 +42,12 @@ class TextTypeTest {
 	void sql_hasCorrectSigns() {
 		assertEquals("$$$sql", TextType.SQL.getStartSign());
 		assertEquals("$$$", TextType.SQL.getEndSign());
+	}
+
+	@Test
+	void config_hasCorrectSigns() {
+		assertEquals("$$$config", TextType.CONFIG.getStartSign());
+		assertEquals("$$$", TextType.CONFIG.getEndSign());
 	}
 
 	@Test
@@ -67,6 +73,7 @@ class TextTypeTest {
 		assertEquals(TextType.JSON, TextType.getType(TextType.TEXT, "$$$json"));
 		assertEquals(TextType.PYTHON, TextType.getType(TextType.TEXT, "$$$python"));
 		assertEquals(TextType.SQL, TextType.getType(TextType.TEXT, "$$$sql"));
+		assertEquals(TextType.CONFIG, TextType.getType(TextType.TEXT, "$$$config"));
 		assertEquals(TextType.MARK_DOWN, TextType.getType(TextType.TEXT, "$$$markdown-report"));
 		assertEquals(TextType.RESULT_SET, TextType.getType(TextType.TEXT, "$$$result_set"));
 	}
@@ -81,6 +88,7 @@ class TextTypeTest {
 		assertEquals(TextType.TEXT, TextType.getType(TextType.JSON, "$$$"));
 		assertEquals(TextType.TEXT, TextType.getType(TextType.PYTHON, "$$$"));
 		assertEquals(TextType.TEXT, TextType.getType(TextType.SQL, "$$$"));
+		assertEquals(TextType.TEXT, TextType.getType(TextType.CONFIG, "$$$"));
 		assertEquals(TextType.TEXT, TextType.getType(TextType.MARK_DOWN, "$$$/markdown-report"));
 		assertEquals(TextType.TEXT, TextType.getType(TextType.RESULT_SET, "$$$"));
 	}
@@ -96,6 +104,7 @@ class TextTypeTest {
 		assertEquals(TextType.JSON, TextType.getTypeByStratSign("$$$json"));
 		assertEquals(TextType.PYTHON, TextType.getTypeByStratSign("$$$python"));
 		assertEquals(TextType.SQL, TextType.getTypeByStratSign("$$$sql"));
+		assertEquals(TextType.CONFIG, TextType.getTypeByStratSign("$$$config"));
 		assertEquals(TextType.MARK_DOWN, TextType.getTypeByStratSign("$$$markdown-report"));
 		assertEquals(TextType.RESULT_SET, TextType.getTypeByStratSign("$$$result_set"));
 	}

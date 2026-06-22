@@ -1,0 +1,147 @@
+/*
+ * Copyright 2024-2026 the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.alibaba.cloud.ai.dataagent.service.seatunnel;
+
+import com.alibaba.cloud.ai.dataagent.dto.seatunnel.SeatunnelTaskDTO;
+import com.alibaba.cloud.ai.dataagent.dto.seatunnel.SeatunnelTaskResult;
+import com.alibaba.cloud.ai.dataagent.entity.SeatunnelTask;
+import com.alibaba.cloud.ai.dataagent.enums.SeatunnelTaskExecStatus;
+import com.alibaba.cloud.ai.dataagent.mapper.SeatunnelTaskMapper;
+import com.alibaba.cloud.ai.dataagent.service.seatunnel.gateway.SeatunnelGatewayClient;
+import lombok.AllArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+
+import java.time.LocalDateTime;
+import java.util.List;
+
+/**
+ * SeaTunnel 任务审批服务：持久化、列表查询、执行与忽略。
+ */
+@Slf4j
+@Service
+@AllArgsConstructor
+public class SeatunnelTaskService {
+
+	private final SeatunnelTaskMapper seatunnelTaskMapper;
+
+	private final SeatunnelGatewayClient seatunnelGatewayClient;
+
+	/**
+	 * 将生成的 SeaTunnel conf 写入审批表。
+	 */
+	public void save(SeatunnelTaskResult result, Long agentId) {
+		if (result.getType() == SeatunnelTaskResult.Type.ERROR) {
+			throw new IllegalArgumentException("错误类型的 SeaTunnel 结果无需保存");
+		}
+		if (!StringUtils.hasText(result.getJobConfig())) {
+			throw new IllegalStateException("SeaTunnel conf 为空，无法保存审批记录");
+		}
+
+		SeatunnelTask record = SeatunnelTask.builder()
+			.agentId(agentId.intValue())
+			.sourceDatasourceId(result.getSourceDatasourceId())
+			.sinkDatasourceId(result.getSinkDatasourceId())
+			.sourceTable(result.getSourceTable())
+			.targetTable(result.getTargetTable())
+			.jobConfig(result.getJobConfig())
+			.execStatus(SeatunnelTaskExecStatus.PENDING.getValue())
+			.build();
+
+		int rows = seatunnelTaskMapper.insert(record);
+		if (rows <= 0) {
+			throw new IllegalStateException("保存 SeaTunnel 审批记录失败，请稍后重试");
+		}
+		log.info("Saved seatunnel_task record id={} for agent={}", record.getId(), agentId);
+	}
+
+	public List<SeatunnelTaskDTO> list(String status) {
+		return seatunnelTaskMapper.selectAll(status).stream().map(this::toDto).toList();
+	}
+
+	/**
+	 * 提交 SeaTunnel 作业（读库 conf → 调 Gateway）。
+	 */
+	public void execute(Integer id) {
+		SeatunnelTask record = requirePendingRecord(id);
+		updateStatus(record.getId(), SeatunnelTaskExecStatus.RUNNING, null, null, null);
+		try {
+			String jobId = seatunnelGatewayClient.submit(record.getJobConfig());
+			updateStatus(record.getId(), SeatunnelTaskExecStatus.SUCCESS, jobId, null, LocalDateTime.now());
+			log.info("Submitted seatunnel_task id={} successfully, jobId={}", id, jobId);
+		}
+		catch (Exception ex) {
+			log.error("Failed to execute seatunnel_task id={}: {}", id, ex.getMessage());
+			updateStatus(record.getId(), SeatunnelTaskExecStatus.FAILED, null, ex.getMessage(), LocalDateTime.now());
+			throw ex instanceof IllegalStateException illegalStateException ? illegalStateException
+					: new IllegalStateException("SeaTunnel 作业提交失败：" + ex.getMessage(), ex);
+		}
+	}
+
+	/**
+	 * 忽略待执行的 SeaTunnel 任务。
+	 */
+	public void ignore(Integer id) {
+		SeatunnelTask record = requirePendingRecord(id);
+		updateStatus(record.getId(), SeatunnelTaskExecStatus.IGNORED, null, null, null);
+		log.info("Ignored seatunnel_task id={}", id);
+	}
+
+	private SeatunnelTask requirePendingRecord(Integer id) {
+		SeatunnelTask record = seatunnelTaskMapper.selectById(id);
+		if (record == null) {
+			throw new IllegalArgumentException("审批记录不存在，请刷新列表后重试");
+		}
+		if (!SeatunnelTaskExecStatus.PENDING.getValue().equals(record.getExecStatus())) {
+			SeatunnelTaskExecStatus current = SeatunnelTaskExecStatus.fromValue(record.getExecStatus());
+			throw new IllegalStateException("该任务已处理（当前状态：" + current.getLabel() + "），无法重复操作");
+		}
+		return record;
+	}
+
+	private void updateStatus(Integer id, SeatunnelTaskExecStatus status, String externalJobId, String errorMsg,
+			LocalDateTime execTime) {
+		SeatunnelTask update = SeatunnelTask.builder()
+			.id(id)
+			.execStatus(status.getValue())
+			.externalJobId(externalJobId)
+			.errorMsg(errorMsg)
+			.execTime(execTime)
+			.build();
+		seatunnelTaskMapper.updateStatus(update);
+	}
+
+	private SeatunnelTaskDTO toDto(SeatunnelTask record) {
+		SeatunnelTaskExecStatus status = SeatunnelTaskExecStatus.fromValue(record.getExecStatus());
+		return SeatunnelTaskDTO.builder()
+			.id(record.getId())
+			.agentId(record.getAgentId())
+			.sourceDatasourceId(record.getSourceDatasourceId())
+			.sinkDatasourceId(record.getSinkDatasourceId())
+			.sourceTable(record.getSourceTable())
+			.targetTable(record.getTargetTable())
+			.jobConfig(record.getJobConfig())
+			.execStatus(record.getExecStatus())
+			.execStatusLabel(status.getLabel())
+			.externalJobId(record.getExternalJobId())
+			.errorMsg(record.getErrorMsg())
+			.createTime(record.getCreateTime())
+			.execTime(record.getExecTime())
+			.build();
+	}
+
+}

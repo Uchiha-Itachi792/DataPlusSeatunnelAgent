@@ -56,6 +56,15 @@ class IntentRecognitionDispatcherTest {
 	}
 
 	@Test
+	void apply_seatunnelSyncIntent_routesToSeatunnelConfigGenerateNode() throws Exception {
+		OverAllState state = new OverAllState();
+		IntentRecognitionOutputDTO dto = TestFixtures.createIntentDTO(INTENT_CLASSIFICATION_SEATUNNEL_SYNC_TASK);
+		state.updateState(Map.of(INTENT_RECOGNITION_NODE_OUTPUT, dto));
+
+		assertEquals(SEATUNNEL_CONFIG_GENERATE_NODE, dispatcher.apply(state));
+	}
+
+	@Test
 	void apply_syncTaskIntent_routesToSyncTaskNode() throws Exception {
 		OverAllState state = new OverAllState();
 		IntentRecognitionOutputDTO dto = TestFixtures.createIntentDTO(INTENT_CLASSIFICATION_SYNC_TASK);

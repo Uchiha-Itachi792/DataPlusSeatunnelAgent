@@ -287,3 +287,24 @@ CREATE TABLE IF NOT EXISTS sql_check (
     INDEX idx_exec_status (exec_status),
     INDEX idx_create_time (create_time)
 ) ENGINE = InnoDB COMMENT = '同步SQL审批表';
+
+-- SeaTunnel 任务审批表
+CREATE TABLE IF NOT EXISTS seatunnel_task (
+    id INT NOT NULL AUTO_INCREMENT,
+    agent_id INT NOT NULL COMMENT '智能体ID',
+    source_datasource_id INT NOT NULL COMMENT '源数据源ID',
+    sink_datasource_id INT NOT NULL COMMENT '目标数据源ID',
+    source_table VARCHAR(255) NOT NULL COMMENT '源表',
+    target_table VARCHAR(255) NOT NULL COMMENT '目标表',
+    job_config TEXT NOT NULL COMMENT 'SeaTunnel conf 全文',
+    exec_status VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT '执行状态：PENDING/RUNNING/SUCCESS/IGNORED/FAILED',
+    external_job_id VARCHAR(128) COMMENT 'Gateway 返回的作业ID',
+    error_msg TEXT COMMENT '执行失败错误信息',
+    create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    exec_time TIMESTAMP NULL COMMENT '执行时间',
+    PRIMARY KEY (id),
+    INDEX idx_agent_id (agent_id),
+    INDEX idx_exec_status (exec_status),
+    INDEX idx_create_time (create_time)
+) ENGINE = InnoDB COMMENT = 'SeaTunnel任务审批表';

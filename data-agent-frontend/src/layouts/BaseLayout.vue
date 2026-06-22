@@ -36,6 +36,10 @@
               <i class="bi bi-check2-square"></i>
               <span>SQL审批</span>
             </div>
+            <div class="nav-item" :class="{ active: isSeatunnelTaskPage() }" @click="goToSeatunnelTask">
+              <i class="bi bi-arrow-left-right"></i>
+              <span>SeaTunnel任务</span>
+            </div>
           </nav>
         </div>
       </div>
@@ -69,6 +73,10 @@
         router.push('/sql-check');
       };
 
+      const goToSeatunnelTask = () => {
+        router.push('/seatunnel-task');
+      };
+
       const isAgentPage = () => {
         return (
           router.currentRoute.value.name === 'AgentList' ||
@@ -86,13 +94,19 @@
         return router.currentRoute.value.name === 'SqlApproval';
       };
 
+      const isSeatunnelTaskPage = () => {
+        return router.currentRoute.value.name === 'SeatunnelTask';
+      };
+
       return {
         goToAgentList,
         goToModelConfig,
         goToSqlApproval,
+        goToSeatunnelTask,
         isAgentPage,
         isModelConfigPage,
         isSqlApprovalPage,
+        isSeatunnelTaskPage,
       };
     },
   };

@@ -18,6 +18,7 @@ package com.alibaba.cloud.ai.dataagent.config;
 import com.alibaba.cloud.ai.dataagent.properties.CodeExecutorProperties;
 import com.alibaba.cloud.ai.dataagent.properties.DataAgentProperties;
 import com.alibaba.cloud.ai.dataagent.properties.FileStorageProperties;
+import com.alibaba.cloud.ai.dataagent.properties.SeatunnelGatewayProperties;
 import com.alibaba.cloud.ai.dataagent.service.vectorstore.SimpleVectorStoreInitialization;
 import com.alibaba.cloud.ai.dataagent.splitter.SentenceSplitter;
 import com.alibaba.cloud.ai.transformer.splitter.RecursiveCharacterTextSplitter;
@@ -86,7 +87,8 @@ import static com.alibaba.cloud.ai.graph.action.AsyncEdgeAction.edge_async;
 @Slf4j
 @Configuration
 @EnableAsync
-@EnableConfigurationProperties({ CodeExecutorProperties.class, DataAgentProperties.class, FileStorageProperties.class })
+@EnableConfigurationProperties({ CodeExecutorProperties.class, DataAgentProperties.class, FileStorageProperties.class,
+		SeatunnelGatewayProperties.class })
 public class DataAgentConfiguration implements DisposableBean {
 
 	/**
@@ -115,6 +117,12 @@ public class DataAgentConfiguration implements DisposableBean {
 	}
 
 	@Bean
+	@ConditionalOnMissingBean(org.springframework.web.client.RestTemplate.class)
+	public org.springframework.web.client.RestTemplate restTemplate() {
+		return new org.springframework.web.client.RestTemplate();
+	}
+
+	@Bean
 	public StateGraph nl2sqlGraph(NodeBeanUtil nodeBeanUtil, CodeExecutorProperties codeExecutorProperties)
 			throws GraphStateException {
 
@@ -129,6 +137,7 @@ public class DataAgentConfiguration implements DisposableBean {
 			// Intent recognition
 			keyStrategyHashMap.put(INTENT_RECOGNITION_NODE_OUTPUT, KeyStrategy.REPLACE);
 			keyStrategyHashMap.put(SYNC_TASK_NODE_OUTPUT, KeyStrategy.REPLACE);
+			keyStrategyHashMap.put(SEATUNNEL_CONFIG_GENERATE_NODE_OUTPUT, KeyStrategy.REPLACE);
 			// QUERY_ENHANCE_NODE节点输出
 			keyStrategyHashMap.put(QUERY_ENHANCE_NODE_OUTPUT, KeyStrategy.REPLACE);
 			// Semantic model
@@ -187,6 +196,8 @@ public class DataAgentConfiguration implements DisposableBean {
 			// --- 准备阶段：理解问题并召回 Schema / Evidence ---
 			.addNode(INTENT_RECOGNITION_NODE, nodeBeanUtil.getNodeBeanAsync(IntentRecognitionNode.class)) // 意图识别：闲聊 / 数据分析 / 数据同步
 			.addNode(SYNC_TASK_NODE, nodeBeanUtil.getNodeBeanAsync(SyncTaskNode.class)) // 数据同步：生成 SQL（不执行）
+			.addNode(SEATUNNEL_CONFIG_GENERATE_NODE,
+					nodeBeanUtil.getNodeBeanAsync(SeatunnelConfigGenerateNode.class)) // SeaTunnel：生成 conf（不执行）
 			.addNode(EVIDENCE_RECALL_NODE, nodeBeanUtil.getNodeBeanAsync(EvidenceRecallNode.class)) // RAG 召回业务术语与 Agent 知识
 			.addNode(QUERY_ENHANCE_NODE, nodeBeanUtil.getNodeBeanAsync(QueryEnhanceNode.class)) // 结合 Evidence 改写/增强用户问题
 			.addNode(SCHEMA_RECALL_NODE, nodeBeanUtil.getNodeBeanAsync(SchemaRecallNode.class)) // 向量召回相关表、列
@@ -206,8 +217,10 @@ public class DataAgentConfiguration implements DisposableBean {
 
 		stateGraph.addEdge(START, INTENT_RECOGNITION_NODE)
 			.addConditionalEdges(INTENT_RECOGNITION_NODE, edge_async(new IntentRecognitionDispatcher()),
-					Map.of(EVIDENCE_RECALL_NODE, EVIDENCE_RECALL_NODE, SYNC_TASK_NODE, SYNC_TASK_NODE, END, END))
+					Map.of(EVIDENCE_RECALL_NODE, EVIDENCE_RECALL_NODE, SYNC_TASK_NODE, SYNC_TASK_NODE,
+							SEATUNNEL_CONFIG_GENERATE_NODE, SEATUNNEL_CONFIG_GENERATE_NODE, END, END))
 			.addEdge(SYNC_TASK_NODE, END)
+			.addEdge(SEATUNNEL_CONFIG_GENERATE_NODE, END)
 			.addEdge(EVIDENCE_RECALL_NODE, QUERY_ENHANCE_NODE)
 			.addConditionalEdges(QUERY_ENHANCE_NODE, edge_async(new QueryEnhanceDispatcher()),
 					Map.of(SCHEMA_RECALL_NODE, SCHEMA_RECALL_NODE, END, END))
