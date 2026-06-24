@@ -72,10 +72,7 @@ public class SeatunnelConfigBuilder {
 	}
 
 	private String escapeHocon(String value) {
-		if (value == null) {
-			return "";
-		}
-		return value.replace("\\", "\\\\").replace("\"", "\\\"");
+		return SeatunnelConfPostProcessor.escapeHocon(value);
 	}
 
 }

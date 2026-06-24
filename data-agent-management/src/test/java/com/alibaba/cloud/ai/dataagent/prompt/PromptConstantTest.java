@@ -130,4 +130,10 @@ class PromptConstantTest {
 		assertNotNull(template);
 	}
 
+	@Test
+	void getSeatunnelConfGeneratePromptTemplate_returnsNonNull() {
+		PromptTemplate template = PromptConstant.getSeatunnelConfGeneratePromptTemplate();
+		assertNotNull(template);
+	}
+
 }

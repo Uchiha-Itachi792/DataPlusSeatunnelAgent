@@ -31,6 +31,12 @@ public class SeatunnelTaskResult {
 
 	}
 
+	public enum GenerationMode {
+
+		TEMPLATE, LLM
+
+	}
+
 	private final Type type;
 
 	private final String message;
@@ -45,12 +51,14 @@ public class SeatunnelTaskResult {
 
 	private final Integer sinkDatasourceId;
 
+	private final GenerationMode generationMode;
+
 	public static SeatunnelTaskResult error(String message) {
 		return SeatunnelTaskResult.builder().type(Type.ERROR).message(message).build();
 	}
 
 	public static SeatunnelTaskResult ok(String jobConfig, String sourceTable, String targetTable,
-			Integer sourceDatasourceId, Integer sinkDatasourceId) {
+			Integer sourceDatasourceId, Integer sinkDatasourceId, GenerationMode generationMode) {
 		return SeatunnelTaskResult.builder()
 			.type(Type.OK)
 			.jobConfig(jobConfig)
@@ -58,7 +66,13 @@ public class SeatunnelTaskResult {
 			.targetTable(targetTable)
 			.sourceDatasourceId(sourceDatasourceId)
 			.sinkDatasourceId(sinkDatasourceId)
+			.generationMode(generationMode)
 			.build();
+	}
+
+	public static SeatunnelTaskResult ok(String jobConfig, String sourceTable, String targetTable,
+			Integer sourceDatasourceId, Integer sinkDatasourceId) {
+		return ok(jobConfig, sourceTable, targetTable, sourceDatasourceId, sinkDatasourceId, null);
 	}
 
 	public boolean isSuccess() {

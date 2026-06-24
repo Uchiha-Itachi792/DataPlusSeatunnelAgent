@@ -88,7 +88,9 @@ public class SeatunnelConfigGenerateNode implements NodeAction {
 		}
 
 		List<ChatResponse> chunks = new ArrayList<>();
-		chunks.add(ChatResponseUtil.createResponse("已生成 SeaTunnel 作业配置："));
+		String modeHint = result.getGenerationMode() == SeatunnelTaskResult.GenerationMode.LLM
+				? "（LLM 复杂配置）" : "（模板全表同步）";
+		chunks.add(ChatResponseUtil.createResponse("已生成 SeaTunnel 作业配置" + modeHint + "："));
 		chunks.add(ChatResponseUtil.createPureResponse(TextType.CONFIG.getStartSign()));
 		chunks.add(ChatResponseUtil.createResponse(result.getJobConfig()));
 		chunks.add(ChatResponseUtil.createPureResponse(TextType.CONFIG.getEndSign()));

@@ -15,6 +15,9 @@
  */
 package com.alibaba.cloud.ai.dataagent.service.seatunnel;
 
+import com.alibaba.cloud.ai.dataagent.bo.DbConfigBO;
+import com.alibaba.cloud.ai.dataagent.bo.schema.ColumnInfoBO;
+import com.alibaba.cloud.ai.dataagent.dto.prompt.SeatunnelConfGenerationDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncIntentParseDTO;
 import com.alibaba.cloud.ai.dataagent.dto.seatunnel.SeatunnelTaskResult;
 import com.alibaba.cloud.ai.dataagent.entity.AgentDatasource;
@@ -24,19 +27,26 @@ import com.alibaba.cloud.ai.dataagent.prompt.PromptHelper;
 import com.alibaba.cloud.ai.dataagent.service.datasource.AgentDatasourceService;
 import com.alibaba.cloud.ai.dataagent.service.datasource.DatasourceService;
 import com.alibaba.cloud.ai.dataagent.service.llm.LlmService;
+import com.alibaba.cloud.ai.dataagent.service.sync.SyncRelatedTableExpander;
+import com.alibaba.cloud.ai.dataagent.service.sync.SyncSchemaBuilder;
 import com.alibaba.cloud.ai.dataagent.util.JsonParseUtil;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.SEATUNNEL_UNSUPPORTED_DATASOURCE_MSG;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.SYNC_PARSE_FAILED_MSG;
 
 /**
- * SeaTunnel conf 生成服务：解析同步意图，映射数据源并生成 HOCON 配置。
+ * SeaTunnel conf 生成服务：解析同步意图，映射数据源并生成 HOCON 配置（模板/LLM 分流）。
  */
 @Slf4j
 @Service
@@ -52,6 +62,16 @@ public class SeatunnelSyncService {
 	private final DatasourceService datasourceService;
 
 	private final SeatunnelConfigBuilder seatunnelConfigBuilder;
+
+	private final SyncSchemaBuilder syncSchemaBuilder;
+
+	private final SyncRelatedTableExpander syncRelatedTableExpander;
+
+	private final SeatunnelSyncComplexityRouter complexityRouter;
+
+	private final SeatunnelConfGenerateService seatunnelConfGenerateService;
+
+	private final SeatunnelConfPostProcessor seatunnelConfPostProcessor;
 
 	public SeatunnelTaskResult generateConf(Long agentId, String userInput, String multiTurn) {
 		try {
@@ -79,14 +99,60 @@ public class SeatunnelSyncService {
 				return SeatunnelTaskResult.error("源表 %s 不存在，无法同步".formatted(requestedSource));
 			}
 
-			String targetTable = resolveTableName(datasourceId, requestedTarget);
-			if (targetTable == null) {
-				return SeatunnelTaskResult.error("目标表 %s 不存在，无法同步".formatted(requestedTarget));
+			List<String> relatedRequested = normalizeRelatedTables(
+					syncRelatedTableExpander.expand(datasourceId, sourceTable, userInput, parsed.getRelatedTables()),
+					requestedSource, requestedTarget);
+			Map<String, String> resolvedRelated = new LinkedHashMap<>();
+			for (String related : relatedRequested) {
+				String resolved = resolveTableName(datasourceId, related);
+				if (resolved == null) {
+					return SeatunnelTaskResult.error("关联表 %s 不存在，无法同步".formatted(related));
+				}
+				resolvedRelated.put(related, resolved);
 			}
 
-			String jobConfig = seatunnelConfigBuilder.build(datasource, sourceTable, targetTable);
-			log.info("Generated SeaTunnel conf for agent {} from {} to {}", agentId, requestedSource, requestedTarget);
-			return SeatunnelTaskResult.ok(jobConfig, requestedSource, requestedTarget, datasourceId, datasourceId);
+			String targetTable = resolveTableName(datasourceId, requestedTarget);
+			boolean targetExists = targetTable != null;
+
+			Map<String, List<ColumnInfoBO>> tableColumns = new LinkedHashMap<>();
+			tableColumns.put(sourceTable, loadColumns(datasourceId, sourceTable, requestedSource));
+			for (Map.Entry<String, String> entry : resolvedRelated.entrySet()) {
+				tableColumns.put(entry.getValue(), loadColumns(datasourceId, entry.getValue(), entry.getKey()));
+			}
+			if (targetExists) {
+				tableColumns.put(targetTable, loadColumns(datasourceId, targetTable, requestedTarget));
+			}
+
+			SeatunnelSyncMode mode = complexityRouter.resolve(userInput, relatedRequested, targetExists);
+			DbConfigBO dbConfig = datasourceService.getDbConfig(datasource);
+
+			String jobConfig;
+			SeatunnelTaskResult.GenerationMode generationMode;
+			if (mode == SeatunnelSyncMode.TEMPLATE) {
+				jobConfig = seatunnelConfigBuilder.build(datasource, sourceTable, targetTable);
+				generationMode = SeatunnelTaskResult.GenerationMode.TEMPLATE;
+			}
+			else {
+				String relatedTablesDisplay = relatedRequested.isEmpty() ? "无"
+						: String.join(", ", relatedRequested);
+				SeatunnelConfGenerationDTO generationDTO = SeatunnelConfGenerationDTO.builder()
+					.userInput(userInput)
+					.multiTurn(multiTurn)
+					.schemaDTO(syncSchemaBuilder.build(tableColumns))
+					.sourceTable(requestedSource)
+					.targetTable(requestedTarget)
+					.relatedTables(relatedTablesDisplay)
+					.targetTableExists(targetExists)
+					.build();
+				String rawConf = seatunnelConfGenerateService.generate(generationDTO);
+				jobConfig = seatunnelConfPostProcessor.injectCredentials(rawConf, dbConfig);
+				generationMode = SeatunnelTaskResult.GenerationMode.LLM;
+			}
+
+			log.info("Generated SeaTunnel conf for agent {} from {} to {} via {}", agentId, requestedSource,
+					requestedTarget, generationMode);
+			return SeatunnelTaskResult.ok(jobConfig, requestedSource, requestedTarget, datasourceId, datasourceId,
+					generationMode);
 		}
 		catch (IllegalArgumentException | IllegalStateException ex) {
 			log.warn("SeaTunnel conf generation failed for agent {}: {}", agentId, ex.getMessage());
@@ -96,6 +162,26 @@ public class SeatunnelSyncService {
 			log.error("Unexpected error generating SeaTunnel conf for agent {}", agentId, ex);
 			return SeatunnelTaskResult.error("生成 SeaTunnel conf 失败：" + ex.getMessage());
 		}
+	}
+
+	private List<ColumnInfoBO> loadColumns(Integer datasourceId, String tableName, String displayName) throws Exception {
+		List<ColumnInfoBO> columns = datasourceService.getTableColumnMetadata(datasourceId, tableName);
+		if (columns.isEmpty()) {
+			throw new IllegalStateException("表 %s 无可用字段，无法同步".formatted(displayName));
+		}
+		return columns;
+	}
+
+	private List<String> normalizeRelatedTables(List<String> relatedTables, String sourceTable, String targetTable) {
+		if (relatedTables == null || relatedTables.isEmpty()) {
+			return List.of();
+		}
+		Set<String> excluded = Set.of(sourceTable.toLowerCase(), targetTable.toLowerCase());
+		return relatedTables.stream()
+			.filter(StringUtils::hasText)
+			.map(String::trim)
+			.filter(name -> !excluded.contains(name.toLowerCase()))
+			.collect(Collectors.toCollection(ArrayList::new));
 	}
 
 	private SyncIntentParseDTO parseTables(String userInput, String multiTurn) {

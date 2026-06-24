@@ -134,7 +134,7 @@ flowchart LR
 | **1** | **意图识别扩展（方案 A）** | `intent-recognition.txt` 新增《SeaTunnel同步任务》；`IntentRecognitionDispatcher` 新增分支 → `SeatunnelConfigGenerateNode`；`《数据同步任务》` → `SyncTaskNode` 保持不变 |
 | **2** | **独立短链（跳过 NL2SQL）** | 《SeaTunnel同步任务》不进 Schema/Planner/Feasibility，省 token、降延迟 |
 | **3** | **数据源 → Connector 映射** | 复用 `Datasource` + `DatasourceTypeHandler`，生成 source/sink JDBC 片段 |
-| **4** | **新建 conf 生成 Node** | `SeatunnelConfigBuilder`（模板）+ **新建** `SeatunnelConfigGenerateNode`（LLM 补表名、字段、过滤条件）；**不修改** `SyncTaskNode` |
+| **4** | **新建 conf 生成 Node** | `SeatunnelSyncComplexityRouter` 分流：简单场景走 `SeatunnelConfigBuilder` 模板，复杂场景走 `SeatunnelConfGenerateService`（LLM + Schema 召回 + 凭证注入）；**不修改** `SyncTaskNode` |
 | **5** | **MySQL 任务表** | `seatunnel_task`：conf 全文、源/目标表、数据源 ID、状态、外部 job_id、错误信息 |
 | **6** | **任务 Service + REST** | 保存、列表、执行、忽略；执行时读 conf 调 Gateway |
 | **7** | **前端审核页** | 列表 + conf 预览 + 执行/忽略（参考 `SqlApproval.vue`） |
@@ -182,7 +182,9 @@ flowchart LR
 Constant.java                            # INTENT_CLASSIFICATION_SEATUNNEL_SYNC_TASK、SEATUNNEL_CONFIG_GENERATE_NODE
 IntentRecognitionDispatcher              # 新增分支 → SeatunnelConfigGenerateNode；SyncTaskNode 分支不动
 DataAgentConfiguration                   # 注册新 Node + 条件边；新 Node → END
-SeatunnelConfigBuilder                   # Datasource → source/sink HOCON 片段
+SeatunnelConfigBuilder                   # 简单场景：同库 MySQL 全表 SELECT * 模板
+SeatunnelSyncComplexityRouter            # 简单/复杂分流（无关联表 + 目标表存在 + 无过滤语义 → 模板，否则 LLM）
+SeatunnelConfGenerateService             # 复杂场景：Schema + LLM 生成 HOCON（占位符）+ PostProcessor 注入凭证
 SeatunnelConfigGenerateNode              # 新建 Node（参考 SyncTaskNode 结构，生成 conf 而非 SQL）
 seatunnel_task 表 + Entity + Mapper
 SeatunnelTaskService.save()              # 参考 SqlCheckService.save()
@@ -203,8 +205,12 @@ error_msg, create_time, exec_time, update_time
 
 **验收：**
 
-- 输入「用 SeaTunnel 把 A 库 orders 同步到 B 库」→ 意图识别为《SeaTunnel同步任务》→ 走 `SeatunnelConfigGenerateNode` → `seatunnel_task` 出现一条 `PENDING` 记录，conf 内容正确（先 MySQL→MySQL 单表）。
+- 输入「用 SeaTunnel 把 orders 同步到 orders_backup」→ 走模板路径（`generationMode=TEMPLATE`），conf 含 `SELECT * FROM orders`。
+- 输入「将 a 和 c 聚合后同步到 b」或「排除 status=0」→ 走 LLM 路径（`generationMode=LLM`），conf 含自定义 query/transform，凭证由后处理注入。
+- 输入「用 SeaTunnel 把 A 库 orders 同步到 B 库」→ 意图识别为《SeaTunnel同步任务》→ 走 `SeatunnelConfigGenerateNode` → `seatunnel_task` 出现一条 `PENDING` 记录。
 - 输入同类 SQL 同步诉求 → 仍识别为《数据同步任务》→ `SyncTaskNode` → `sql_check`，行为与改动前一致。
+
+**SIMPLE 判定规则（`SeatunnelSyncComplexityRouter`）：** 无关联表、目标表已存在、用户输入未命中过滤/JOIN/CDC 等复杂语义 → 模板；否则 LLM。
 
 ---
 
@@ -376,4 +382,4 @@ spring:
 
 **按「方案 A：新增《SeaTunnel同步任务》意图 → 新建 `SeatunnelConfigGenerateNode` → conf 落 MySQL → 页面审核 → 独立 SeaTunnel 服务执行」推进。** 现有 `SyncTaskNode` + `sql_check` SQL 审批链路**完整保留**；SeaTunnel 链路**复制其模式**新建，执行走 Gateway API。两条链路通过意图分类分流，互不影响。
 
-**建议起步：** 阶段 1 的 `intent-recognition.txt` 新分类 + `SeatunnelConfigBuilder` + **新建** `SeatunnelConfigGenerateNode` + `seatunnel_task` 表——先验证《SeaTunnel同步任务》能正确生成 conf 并落库，同时确认《数据同步任务》仍走 `SyncTaskNode` 不受影响。
+**建议起步：** 阶段 1 的 `intent-recognition.txt` 新分类 + `SeatunnelConfigBuilder`（模板）+ `SeatunnelSyncComplexityRouter` / `SeatunnelConfGenerateService`（LLM 分流）+ **新建** `SeatunnelConfigGenerateNode` + `seatunnel_task` 表——先验证《SeaTunnel同步任务》能正确生成 conf 并落库，同时确认《数据同步任务》仍走 `SyncTaskNode` 不受影响。

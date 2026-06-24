@@ -39,6 +39,11 @@ public class PromptConstant {
 		return new PromptTemplate(PromptLoader.loadPrompt("sync-sql-generate"));
 	}
 
+	// seatunnel-conf-generate
+	public static PromptTemplate getSeatunnelConfGeneratePromptTemplate() {
+		return new PromptTemplate(PromptLoader.loadPrompt("seatunnel-conf-generate"));
+	}
+
 	// evidence-query-rewrite
 	public static PromptTemplate getEvidenceQueryRewritePromptTemplate() {
 		return new PromptTemplate(PromptLoader.loadPrompt("evidence-query-rewrite"));
