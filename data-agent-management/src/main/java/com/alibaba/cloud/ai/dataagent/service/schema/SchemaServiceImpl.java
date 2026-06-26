@@ -319,6 +319,21 @@ public class SchemaServiceImpl implements SchemaService {
 		return agentVectorStoreService.getDocumentsOnlyByFilter(filterExpression, tableTopK);
 	}
 
+	@Override
+	public List<Document> searchTableDocumentsByQuery(Integer datasourceId, String query) {
+		Assert.notNull(datasourceId, "datasourceId cannot be null");
+		int tableTopK = dataAgentProperties.getVectorStore().getTableTopkLimit();
+		double tableThreshold = dataAgentProperties.getVectorStore().getTableSimilarityThreshold();
+
+		FilterExpressionBuilder b = new FilterExpressionBuilder();
+		List<Filter.Expression> conditions = new ArrayList<>();
+		conditions.add(b.eq(Constant.DATASOURCE_ID, datasourceId.toString()).build());
+		conditions.add(b.eq(DocumentMetadataConstant.VECTOR_TYPE, DocumentMetadataConstant.TABLE).build());
+		Filter.Expression filterExpression = DynamicFilterService.combineWithAnd(conditions);
+
+		return agentVectorStoreService.searchByFilterAndQuery(filterExpression, query, tableTopK, tableThreshold);
+	}
+
 	private List<String> getMissingTableNamesWithForeignKeySet(List<Document> tableDocuments,
 			Set<String> foreignKeySet) {
 		Set<String> uniqueTableNames = tableDocuments.stream()

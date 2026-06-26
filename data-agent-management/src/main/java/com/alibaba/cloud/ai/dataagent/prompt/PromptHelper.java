@@ -19,6 +19,7 @@ import com.alibaba.cloud.ai.dataagent.bo.schema.DisplayStyleBO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.EvidenceQueryRewriteDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.IntentRecognitionOutputDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncIntentParseDTO;
+import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncTableResolveDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SeatunnelConfGenerationDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncSqlGenerationDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.QueryEnhanceOutputDTO;
@@ -255,6 +256,19 @@ public class PromptHelper {
 		BeanOutputConverter<SyncIntentParseDTO> beanOutputConverter = new BeanOutputConverter<>(SyncIntentParseDTO.class);
 		params.put("format", beanOutputConverter.getFormat());
 		return PromptConstant.getSyncIntentParsePromptTemplate().render(params);
+	}
+
+	/**
+	 * 构建数据同步表名消歧提示词（业务语义名 → 物理表名）。
+	 */
+	public static String buildSyncTableResolvePrompt(String multiTurn, String latestQuery, SchemaDTO schemaDTO) {
+		Map<String, Object> params = new HashMap<>();
+		params.put("multi_turn", multiTurn != null ? multiTurn : "(无)");
+		params.put("latest_query", latestQuery);
+		params.put("schema_info", buildMixMacSqlDbPrompt(schemaDTO, true));
+		BeanOutputConverter<SyncTableResolveDTO> beanOutputConverter = new BeanOutputConverter<>(SyncTableResolveDTO.class);
+		params.put("format", beanOutputConverter.getFormat());
+		return PromptConstant.getSyncTableResolvePromptTemplate().render(params);
 	}
 
 	/**

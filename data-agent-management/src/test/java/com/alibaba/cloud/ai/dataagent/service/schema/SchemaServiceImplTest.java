@@ -219,6 +219,17 @@ class SchemaServiceImplTest {
 	}
 
 	@Test
+	void searchTableDocumentsByQuery_usesSemanticSearch() {
+		when(agentVectorStoreService.searchByFilterAndQuery(any(), eq("订单明细"), eq(10), eq(0.5)))
+			.thenReturn(List.of(new Document("订单明细表", Map.of("name", "order_items"))));
+
+		List<Document> result = schemaService.searchTableDocumentsByQuery(1, "订单明细");
+
+		assertEquals(1, result.size());
+		verify(agentVectorStoreService).searchByFilterAndQuery(any(), eq("订单明细"), eq(10), eq(0.5));
+	}
+
+	@Test
 	void getTableDocuments_emptyTableNames() {
 		List<Document> result = schemaService.getTableDocuments(1, Collections.emptyList());
 		assertTrue(result.isEmpty());

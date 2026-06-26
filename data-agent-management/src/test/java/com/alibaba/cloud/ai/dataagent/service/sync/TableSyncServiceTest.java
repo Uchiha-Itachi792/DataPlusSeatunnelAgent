@@ -17,11 +17,14 @@ package com.alibaba.cloud.ai.dataagent.service.sync;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,37 +33,34 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.ai.document.Document;
 
 import com.alibaba.cloud.ai.dataagent.bo.schema.ColumnInfoBO;
-import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncIntentParseDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncSqlGenerationDTO;
+import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncTableResolveDTO;
 import com.alibaba.cloud.ai.dataagent.dto.schema.SchemaDTO;
+import com.alibaba.cloud.ai.dataagent.dto.sync.SyncSchemaRecallResult;
 import com.alibaba.cloud.ai.dataagent.dto.sync.SyncTaskResult;
 import com.alibaba.cloud.ai.dataagent.entity.AgentDatasource;
 import com.alibaba.cloud.ai.dataagent.entity.Datasource;
 import com.alibaba.cloud.ai.dataagent.service.datasource.AgentDatasourceService;
 import com.alibaba.cloud.ai.dataagent.service.datasource.DatasourceService;
-import com.alibaba.cloud.ai.dataagent.service.llm.LlmService;
-import com.alibaba.cloud.ai.dataagent.util.ChatResponseUtil;
-import com.alibaba.cloud.ai.dataagent.util.JsonParseUtil;
-
-import reactor.core.publisher.Flux;
 
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
 class TableSyncServiceTest {
 
 	@Mock
-	private LlmService llmService;
-
-	@Mock
-	private JsonParseUtil jsonParseUtil;
-
-	@Mock
 	private AgentDatasourceService agentDatasourceService;
 
 	@Mock
 	private DatasourceService datasourceService;
+
+	@Mock
+	private SyncSchemaRecallService syncSchemaRecallService;
+
+	@Mock
+	private SyncTableResolveService syncTableResolveService;
 
 	@Mock
 	private SyncSchemaBuilder syncSchemaBuilder;
@@ -75,14 +75,14 @@ class TableSyncServiceTest {
 
 	@BeforeEach
 	void setUp() {
-		tableSyncService = new TableSyncService(llmService, jsonParseUtil, agentDatasourceService, datasourceService,
-				syncSchemaBuilder, syncSqlGenerateService, syncRelatedTableExpander);
+		tableSyncService = new TableSyncService(agentDatasourceService, datasourceService, syncSchemaRecallService,
+				syncTableResolveService, syncSchemaBuilder, syncSqlGenerateService, syncRelatedTableExpander);
 		when(syncRelatedTableExpander.expand(any(), any(), any(), any())).thenAnswer(inv -> inv.getArgument(3));
 	}
 
 	@Test
 	void generateSyncSql_delegatesToLlmGenerator() throws Exception {
-		mockParse("order", "A", List.of());
+		mockRecallAndResolve("order", "A", List.of());
 		mockMysqlAgent();
 
 		when(datasourceService.getDatasourceTables(1)).thenReturn(List.of("order", "A"));
@@ -97,24 +97,44 @@ class TableSyncServiceTest {
 
 		assertEquals(SyncTaskResult.Type.SYNC_SQL, result.getType());
 		assertNotNull(result.getSql());
-		assertEquals(true, result.getSql().contains("DELETE FROM"));
+		assertTrue(result.getSql().contains("DELETE FROM"));
+	}
+
+	@Test
+	void generateSyncSql_orderItemsBusinessName_resolvesPhysicalTable() throws Exception {
+		mockRecallAndResolve("order_items", "order_items_back", List.of());
+		mockMysqlAgent();
+
+		when(datasourceService.getDatasourceTables(1)).thenReturn(List.of("order_items"));
+		List<ColumnInfoBO> columns = List.of(col("id"), col("order_id"));
+		when(datasourceService.getTableColumnMetadata(1, "order_items")).thenReturn(columns);
+		when(syncSchemaBuilder.build(any())).thenReturn(new SchemaDTO());
+		when(syncSqlGenerateService.generate(any(SyncSqlGenerationDTO.class)))
+			.thenReturn("INSERT INTO `order_items_back` SELECT * FROM `order_items`;");
+
+		SyncTaskResult result = tableSyncService.generateSyncSql(1L, "把订单明细同步到 order_items_back", "(无)");
+
+		assertEquals(SyncTaskResult.Type.SYNC_SQL, result.getType());
+		assertEquals("order_items", result.getSourceTable());
+		assertEquals("order_items_back", result.getTargetTable());
+		assertTrue(result.getSql().contains("order_items"));
 	}
 
 	@Test
 	void generateSyncSql_sourceNotExists_returnsError() throws Exception {
-		mockParse("order", "A", List.of());
+		mockRecallAndResolve("order", "A", List.of());
 		mockMysqlAgent();
 		when(datasourceService.getDatasourceTables(1)).thenReturn(List.of("A"));
 
 		SyncTaskResult result = tableSyncService.generateSyncSql(1L, "sync order to A", "(无)");
 
 		assertEquals(SyncTaskResult.Type.ERROR, result.getType());
-		assertEquals(true, result.getMessage().contains("源表 order 不存在"));
+		assertTrue(result.getMessage().contains("源表 order 不存在"));
 	}
 
 	@Test
 	void generateSyncSql_relatedTableMissing_returnsError() throws Exception {
-		mockParse("a", "b", List.of("c"));
+		mockRecallAndResolve("a", "b", List.of("c"));
 		mockMysqlAgent();
 		when(datasourceService.getDatasourceTables(1)).thenReturn(List.of("a", "b"));
 		when(datasourceService.getTableColumnMetadata(1, "a")).thenReturn(List.of(col("id")));
@@ -122,12 +142,40 @@ class TableSyncServiceTest {
 		SyncTaskResult result = tableSyncService.generateSyncSql(1L, "sync a and c to b", "(无)");
 
 		assertEquals(SyncTaskResult.Type.ERROR, result.getType());
-		assertEquals(true, result.getMessage().contains("关联表 c 不存在"));
+		assertTrue(result.getMessage().contains("关联表 c 不存在"));
+	}
+
+	@Test
+	void generateSyncSql_schemaRecallEmpty_returnsError() {
+		mockMysqlAgent();
+		when(syncSchemaRecallService.recall(any(), anyLong(), anyString()))
+			.thenReturn(SyncSchemaRecallResult.builder().build());
+
+		SyncTaskResult result = tableSyncService.generateSyncSql(1L, "sync something", "(无)");
+
+		assertEquals(SyncTaskResult.Type.ERROR, result.getType());
+		assertTrue(result.getMessage().contains("未检索到相关数据表"));
+	}
+
+	@Test
+	void generateSyncSql_tableResolveFailed_returnsError() {
+		mockMysqlAgent();
+		Document tableDoc = new Document("t", Map.of("name", "order_items"));
+		when(syncSchemaRecallService.recall(any(), anyLong(), anyString())).thenReturn(SyncSchemaRecallResult.builder()
+			.tableDocuments(List.of(tableDoc))
+			.schemaDTO(new SchemaDTO())
+			.build());
+		when(syncTableResolveService.resolve(anyString(), anyString(), any())).thenReturn(null);
+
+		SyncTaskResult result = tableSyncService.generateSyncSql(1L, "sync", "(无)");
+
+		assertEquals(SyncTaskResult.Type.ERROR, result.getType());
+		assertTrue(result.getMessage().contains("无法从 Schema 中确定源表或目标表"));
 	}
 
 	@Test
 	void generateSyncSql_validationFailure_returnsError() throws Exception {
-		mockParse("order", "A", List.of());
+		mockRecallAndResolve("order", "A", List.of());
 		mockMysqlAgent();
 		when(datasourceService.getDatasourceTables(1)).thenReturn(List.of("order", "A"));
 		when(datasourceService.getTableColumnMetadata(1, "order")).thenReturn(List.of(col("id")));
@@ -139,28 +187,22 @@ class TableSyncServiceTest {
 		SyncTaskResult result = tableSyncService.generateSyncSql(1L, "sync order to A", "(无)");
 
 		assertEquals(SyncTaskResult.Type.ERROR, result.getType());
-		assertEquals(true, result.getMessage().contains("不允许的操作"));
+		assertTrue(result.getMessage().contains("不允许的操作"));
 	}
 
-	@Test
-	void generateSyncSql_parseFailed_returnsError() {
-		when(llmService.callUser(anyString())).thenReturn(Flux.empty());
-		when(llmService.blockToString(any())).thenReturn("");
-
-		SyncTaskResult result = tableSyncService.generateSyncSql(1L, "hello", "(无)");
-
-		assertEquals(SyncTaskResult.Type.ERROR, result.getType());
-	}
-
-	private void mockParse(String source, String target, List<String> related) {
-		when(llmService.callUser(anyString()))
-			.thenReturn(Flux.just(ChatResponseUtil.createResponse("parsed")));
-		when(llmService.blockToString(any())).thenReturn("parsed-json");
-		SyncIntentParseDTO dto = new SyncIntentParseDTO();
+	private void mockRecallAndResolve(String source, String target, List<String> related) {
+		Document tableDoc = new Document("t", Map.of("name", source));
+		SchemaDTO schemaDTO = new SchemaDTO();
+		when(syncSchemaRecallService.recall(any(), anyLong(), anyString())).thenReturn(SyncSchemaRecallResult.builder()
+			.tableDocuments(List.of(tableDoc))
+			.schemaDTO(schemaDTO)
+			.recalledTableNames(List.of(source))
+			.build());
+		SyncTableResolveDTO dto = new SyncTableResolveDTO();
 		dto.setSourceTable(source);
 		dto.setTargetTable(target);
 		dto.setRelatedTables(related);
-		when(jsonParseUtil.tryConvertToObject(anyString(), any(Class.class))).thenReturn(dto);
+		when(syncTableResolveService.resolve(anyString(), anyString(), any())).thenReturn(dto);
 	}
 
 	private void mockMysqlAgent() {

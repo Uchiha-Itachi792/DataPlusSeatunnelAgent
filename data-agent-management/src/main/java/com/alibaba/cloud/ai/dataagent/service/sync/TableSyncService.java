@@ -16,17 +16,15 @@
 package com.alibaba.cloud.ai.dataagent.service.sync;
 
 import com.alibaba.cloud.ai.dataagent.bo.schema.ColumnInfoBO;
-import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncIntentParseDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncSqlGenerationDTO;
+import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncTableResolveDTO;
+import com.alibaba.cloud.ai.dataagent.dto.sync.SyncSchemaRecallResult;
 import com.alibaba.cloud.ai.dataagent.dto.sync.SyncTaskResult;
 import com.alibaba.cloud.ai.dataagent.entity.AgentDatasource;
 import com.alibaba.cloud.ai.dataagent.entity.Datasource;
 import com.alibaba.cloud.ai.dataagent.enums.DatabaseDialectEnum;
-import com.alibaba.cloud.ai.dataagent.prompt.PromptHelper;
 import com.alibaba.cloud.ai.dataagent.service.datasource.AgentDatasourceService;
 import com.alibaba.cloud.ai.dataagent.service.datasource.DatasourceService;
-import com.alibaba.cloud.ai.dataagent.service.llm.LlmService;
-import com.alibaba.cloud.ai.dataagent.util.JsonParseUtil;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -39,24 +37,25 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import static com.alibaba.cloud.ai.dataagent.constant.Constant.SYNC_PARSE_FAILED_MSG;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.SYNC_SCHEMA_RECALL_EMPTY_MSG;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.SYNC_TABLE_RESOLVE_FAILED_MSG;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.SYNC_UNSUPPORTED_DATASOURCE_MSG;
 
 /**
- * 表同步 SQL 生成服务：解析同步意图，基于 Schema + LLM 生成灵活同步脚本。
+ * 表同步 SQL 生成服务：Schema RAG 召回 + LLM 表名消歧，基于 Schema + LLM 生成灵活同步脚本。
  */
 @Slf4j
 @Service
 @AllArgsConstructor
 public class TableSyncService {
 
-	private final LlmService llmService;
-
-	private final JsonParseUtil jsonParseUtil;
-
 	private final AgentDatasourceService agentDatasourceService;
 
 	private final DatasourceService datasourceService;
+
+	private final SyncSchemaRecallService syncSchemaRecallService;
+
+	private final SyncTableResolveService syncTableResolveService;
 
 	private final SyncSchemaBuilder syncSchemaBuilder;
 
@@ -66,12 +65,6 @@ public class TableSyncService {
 
 	public SyncTaskResult generateSyncSql(Long agentId, String userInput, String multiTurn) {
 		try {
-			SyncIntentParseDTO parsed = parseTables(userInput, multiTurn);
-			if (parsed == null || !StringUtils.hasText(parsed.getSourceTable())
-					|| !StringUtils.hasText(parsed.getTargetTable())) {
-				return SyncTaskResult.error(SYNC_PARSE_FAILED_MSG);
-			}
-
 			AgentDatasource agentDatasource = agentDatasourceService.getCurrentAgentDatasource(agentId);
 			Integer datasourceId = agentDatasource.getDatasourceId();
 			Datasource datasource = datasourceService.getDatasourceById(datasourceId);
@@ -83,30 +76,40 @@ public class TableSyncService {
 				return SyncTaskResult.error(SYNC_UNSUPPORTED_DATASOURCE_MSG);
 			}
 
-			String requestedSource = parsed.getSourceTable().trim();
-			String requestedTarget = parsed.getTargetTable().trim();
-			String sourceTable = resolveTableName(datasourceId, requestedSource);
-			if (sourceTable == null) {
-				return SyncTaskResult.error("源表 %s 不存在，无法同步".formatted(requestedSource));
+			SyncSchemaRecallResult recallResult = syncSchemaRecallService.recall(datasourceId, agentId, userInput);
+			if (recallResult.getTableDocuments().isEmpty()) {
+				return SyncTaskResult.error(SYNC_SCHEMA_RECALL_EMPTY_MSG);
 			}
 
+			SyncTableResolveDTO resolved = syncTableResolveService.resolve(userInput, multiTurn,
+					recallResult.getSchemaDTO());
+			if (resolved == null) {
+				return SyncTaskResult.error(SYNC_TABLE_RESOLVE_FAILED_MSG);
+			}
+
+			String sourceTable = resolveTableName(datasourceId, resolved.getSourceTable().trim());
+			if (sourceTable == null) {
+				return SyncTaskResult.error("源表 %s 不存在，无法同步".formatted(resolved.getSourceTable().trim()));
+			}
+
+			String requestedTarget = resolved.getTargetTable().trim();
 			List<String> relatedRequested = normalizeRelatedTables(
-					syncRelatedTableExpander.expand(datasourceId, sourceTable, userInput, parsed.getRelatedTables()),
-					requestedSource, requestedTarget);
+					syncRelatedTableExpander.expand(datasourceId, sourceTable, userInput, resolved.getRelatedTables()),
+					sourceTable, requestedTarget);
 			Map<String, String> resolvedRelated = new LinkedHashMap<>();
 			for (String related : relatedRequested) {
-				String resolved = resolveTableName(datasourceId, related);
-				if (resolved == null) {
+				String physicalRelated = resolveTableName(datasourceId, related);
+				if (physicalRelated == null) {
 					return SyncTaskResult.error("关联表 %s 不存在，无法同步".formatted(related));
 				}
-				resolvedRelated.put(related, resolved);
+				resolvedRelated.put(related, physicalRelated);
 			}
 
 			String targetTable = resolveTableName(datasourceId, requestedTarget);
 			boolean targetExists = targetTable != null;
 
 			Map<String, List<ColumnInfoBO>> tableColumns = new LinkedHashMap<>();
-			tableColumns.put(sourceTable, loadColumns(datasourceId, sourceTable, requestedSource));
+			tableColumns.put(sourceTable, loadColumns(datasourceId, sourceTable, sourceTable));
 			for (Map.Entry<String, String> entry : resolvedRelated.entrySet()) {
 				tableColumns.put(entry.getValue(), loadColumns(datasourceId, entry.getValue(), entry.getKey()));
 			}
@@ -121,16 +124,17 @@ public class TableSyncService {
 				.userInput(userInput)
 				.multiTurn(multiTurn)
 				.schemaDTO(syncSchemaBuilder.build(tableColumns))
-				.sourceTable(requestedSource)
-				.targetTable(requestedTarget)
+				.sourceTable(sourceTable)
+				.targetTable(targetExists ? targetTable : requestedTarget)
 				.relatedTables(relatedTablesDisplay)
 				.targetTableExists(targetExists)
 				.dialect(DatabaseDialectEnum.MYSQL.getCode())
 				.build();
 
 			String sql = syncSqlGenerateService.generate(generationDTO);
-			log.info("Generated sync SQL for agent {} from {} to {}", agentId, requestedSource, requestedTarget);
-			return SyncTaskResult.syncSql(sql, requestedSource, requestedTarget, datasourceId);
+			log.info("Generated sync SQL for agent {} from {} to {}", agentId, sourceTable,
+					targetExists ? targetTable : requestedTarget);
+			return SyncTaskResult.syncSql(sql, sourceTable, targetExists ? targetTable : requestedTarget, datasourceId);
 		}
 		catch (IllegalArgumentException | IllegalStateException ex) {
 			log.warn("Sync SQL generation failed for agent {}: {}", agentId, ex.getMessage());
@@ -160,15 +164,6 @@ public class TableSyncService {
 			.map(String::trim)
 			.filter(name -> !excluded.contains(name.toLowerCase()))
 			.collect(Collectors.toCollection(ArrayList::new));
-	}
-
-	private SyncIntentParseDTO parseTables(String userInput, String multiTurn) {
-		String prompt = PromptHelper.buildSyncIntentParsePrompt(multiTurn, userInput);
-		String llmOutput = llmService.blockToString(llmService.callUser(prompt));
-		if (!StringUtils.hasText(llmOutput)) {
-			return null;
-		}
-		return jsonParseUtil.tryConvertToObject(llmOutput, SyncIntentParseDTO.class);
 	}
 
 	private boolean isMysqlDialect(Datasource datasource) {

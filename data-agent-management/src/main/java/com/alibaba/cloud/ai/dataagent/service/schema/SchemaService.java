@@ -28,6 +28,11 @@ public interface SchemaService {
 
 	List<Document> getTableDocumentsByDatasource(Integer datasourceId, String query);
 
+	/**
+	 * 按用户 query 对指定数据源下的表 Document 做语义向量检索。
+	 */
+	List<Document> searchTableDocumentsByQuery(Integer datasourceId, String query);
+
 	void extractDatabaseName(SchemaDTO schemaDTO, DbConfigBO dbConfig);
 
 	void buildSchemaFromDocuments(String agentId, List<Document> columnDocumentList, List<Document> tableDocuments,

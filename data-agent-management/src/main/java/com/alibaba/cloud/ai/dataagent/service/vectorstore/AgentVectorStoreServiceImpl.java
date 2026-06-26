@@ -29,6 +29,7 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.ai.vectorstore.filter.Filter;
 import org.springframework.stereotype.Service;
 import org.springframework.util.Assert;
+import org.springframework.util.StringUtils;
 
 import java.util.*;
 
@@ -240,6 +241,23 @@ public class AgentVectorStoreServiceImpl implements AgentVectorStoreService {
 			.topK(topK)
 			.filterExpression(filterExpression)
 			.similarityThreshold(0.0)
+			.build();
+		return vectorStore.similaritySearch(searchRequest);
+	}
+
+	@Override
+	public List<Document> searchByFilterAndQuery(Filter.Expression filterExpression, String query, Integer topK,
+			double similarityThreshold) {
+		Assert.notNull(filterExpression, "filterExpression cannot be null.");
+		if (topK == null) {
+			topK = dataAgentProperties.getVectorStore().getDefaultTopkLimit();
+		}
+		String searchQuery = StringUtils.hasText(query) ? query : DEFAULT;
+		SearchRequest searchRequest = SearchRequest.builder()
+			.query(searchQuery)
+			.topK(topK)
+			.filterExpression(filterExpression)
+			.similarityThreshold(similarityThreshold)
 			.build();
 		return vectorStore.similaritySearch(searchRequest);
 	}

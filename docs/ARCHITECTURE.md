@@ -204,16 +204,22 @@ flowchart TD
 | 分类 | 路由 |
 |------|------|
 | 《闲聊或无关指令》 | 直接 `END` |
-| 《数据同步任务》 | `SyncTaskNode` → 解析源/目标表、比对列元数据，生成 MySQL `INSERT ... SELECT` 或 `CREATE TABLE`（仅展示，不执行）→ `END` |
+| 《数据同步任务》 | `SyncTaskNode` → Schema RAG 召回 + LLM 表名消歧 → 生成 MySQL 同步 SQL（仅展示，不执行）→ `END` |
 | 《可能的数据分析请求》 | 进入 EvidenceRecall 及后续分析链路 |
 
-`SyncTaskNode` 三场景逻辑（首版 MySQL，Agent 当前激活数据源）：
+`SyncTaskNode` 通过 `TableSyncService` 执行（MySQL，Agent 当前激活数据源）：
+
+1. **Schema RAG 召回**（`SyncSchemaRecallService`）：对用户描述做语义向量检索，召回相关表/列，并按外键补全关联表。
+2. **LLM 表名消歧**（`SyncTableResolveService` + `sync-table-resolve.txt`）：将业务语义名（如「订单明细」）映射为物理表名（如 `order_items`），并硬校验表是否存在。
+3. **SQL 生成**（`SyncSqlGenerateService`）：基于 Schema 与用户过滤/JOIN 需求生成 `INSERT ... SELECT` 或 `CREATE TABLE`。
+
+> SeaTunnel 链路（`SeatunnelSyncService`）仍使用旧的 `sync-intent-parse` 直接抽表名，待后续统一接入同一套 Recall + Resolve。
 
 | 条件 | 输出 |
 |------|------|
-| 目标表存在且列名与源表一致 | `INSERT INTO target (...) SELECT ... FROM source` |
-| 目标表存在但列名不一致 | `字段名字不一致，无法同步` |
-| 目标表不存在 | `CREATE TABLE target (...)`（结构参照源表） |
+| 目标表存在 | `INSERT INTO target (...) SELECT ... FROM source`（可含 JOIN/WHERE） |
+| 目标表不存在 | `CREATE TABLE target (...)` + `INSERT ... SELECT` |
+| Schema 召回为空 / 无法消歧 | 明确错误提示（需初始化数据源或补充描述） |
 
 ### 1. 人类反馈机制
 
