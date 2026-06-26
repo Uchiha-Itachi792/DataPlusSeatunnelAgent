@@ -261,10 +261,12 @@ public class PromptHelper {
 	/**
 	 * 构建数据同步表名消歧提示词（业务语义名 → 物理表名）。
 	 */
-	public static String buildSyncTableResolvePrompt(String multiTurn, String latestQuery, SchemaDTO schemaDTO) {
+	public static String buildSyncTableResolvePrompt(String multiTurn, String latestQuery, SchemaDTO schemaDTO,
+			String evidence) {
 		Map<String, Object> params = new HashMap<>();
 		params.put("multi_turn", multiTurn != null ? multiTurn : "(无)");
 		params.put("latest_query", latestQuery);
+		params.put("evidence", StringUtils.isNotBlank(evidence) ? evidence : "无");
 		params.put("schema_info", buildMixMacSqlDbPrompt(schemaDTO, true));
 		BeanOutputConverter<SyncTableResolveDTO> beanOutputConverter = new BeanOutputConverter<>(SyncTableResolveDTO.class);
 		params.put("format", beanOutputConverter.getFormat());

@@ -57,7 +57,7 @@ class SyncTableResolveServiceTest {
 
 	@Test
 	void resolve_emptySchema_returnsNull() {
-		assertNull(syncTableResolveService.resolve("sync", "(无)", new SchemaDTO()));
+		assertNull(syncTableResolveService.resolve("sync", "(无)", new SchemaDTO(), null));
 	}
 
 	@Test
@@ -74,7 +74,8 @@ class SyncTableResolveServiceTest {
 		dto.setTargetTable("order_items_back");
 		when(jsonParseUtil.tryConvertToObject(anyString(), any(Class.class))).thenReturn(dto);
 
-		SyncTableResolveDTO result = syncTableResolveService.resolve("把订单明细同步到 order_items_back", "(无)", schemaDTO);
+		SyncTableResolveDTO result = syncTableResolveService.resolve("把订单明细同步到 order_items_back", "(无)", schemaDTO,
+				null);
 
 		assertNotNull(result);
 		assertEquals("order_items", result.getSourceTable());
@@ -94,7 +95,7 @@ class SyncTableResolveServiceTest {
 		dto.setSourceTable("order_items");
 		when(jsonParseUtil.tryConvertToObject(anyString(), any(Class.class))).thenReturn(dto);
 
-		assertNull(syncTableResolveService.resolve("sync", "(无)", schemaDTO));
+		assertNull(syncTableResolveService.resolve("sync", "(无)", schemaDTO, null));
 	}
 
 }

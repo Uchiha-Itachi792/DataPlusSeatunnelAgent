@@ -127,11 +127,14 @@ flowchart TD
   BuildCtx --> Intent[IntentRecognitionNode]
   Intent --> IntentGate{Intent type}
   IntentGate -->|chat| End([End])
-  IntentGate -->|sync| SyncNode[SyncTaskNode]
-  SyncNode --> End
-  IntentGate -->|analysis| Evidence[EvidenceRecallNode]
+  IntentGate -->|sync| Evidence[EvidenceRecallNode]
+  IntentGate -->|seatunnel| Seatunnel[SeatunnelConfigGenerateNode]
+  Seatunnel --> End
   Evidence --> Rewrite[QueryEnhanceNode]
-  Rewrite --> Schema[SchemaRecallNode]
+  Rewrite --> EnhanceGate{Intent type}
+  EnhanceGate -->|sync| SyncNode[SyncTaskNode]
+  SyncNode --> End
+  EnhanceGate -->|analysis| Schema[SchemaRecallNode]
   Schema --> Relation[TableRelationNode]
   Relation --> RelGate{Relation ok}
   RelGate -->|retry| Relation
@@ -204,16 +207,19 @@ flowchart TD
 | 分类 | 路由 |
 |------|------|
 | 《闲聊或无关指令》 | 直接 `END` |
-| 《数据同步任务》 | `SyncTaskNode` → Schema RAG 召回 + LLM 表名消歧 → 生成 MySQL 同步 SQL（仅展示，不执行）→ `END` |
-| 《可能的数据分析请求》 | 进入 EvidenceRecall 及后续分析链路 |
+| 《数据同步任务》 | `EvidenceRecallNode` → `QueryEnhanceNode` → `SyncTaskNode` → Schema RAG + LLM 表名消歧 → 生成 MySQL 同步 SQL → `END` |
+| 《SeaTunnel同步任务》 | `SeatunnelConfigGenerateNode` → 生成 conf → `END`（不经过 Evidence/QueryEnhance） |
+| 《可能的数据分析请求》 | `EvidenceRecallNode` → `QueryEnhanceNode` → SchemaRecall 及后续分析链路 |
 
-`SyncTaskNode` 通过 `TableSyncService` 执行（MySQL，Agent 当前激活数据源）：
+`SyncTaskNode` 通过 `TableSyncService` 执行（MySQL，Agent 当前激活数据源）。上游 `QueryEnhanceNode` 产出 `canonical_query` 与 Evidence，用于 Schema 召回与表名消歧；原始用户输入仍用于过滤条件解析与 SQL 生成。
 
-1. **Schema RAG 召回**（`SyncSchemaRecallService`）：对用户描述做语义向量检索，召回相关表/列，并按外键补全关联表。
-2. **LLM 表名消歧**（`SyncTableResolveService` + `sync-table-resolve.txt`）：将业务语义名（如「订单明细」）映射为物理表名（如 `order_items`），并硬校验表是否存在。
-3. **SQL 生成**（`SyncSqlGenerateService`）：基于 Schema 与用户过滤/JOIN 需求生成 `INSERT ... SELECT` 或 `CREATE TABLE`。
+1. **Evidence 召回 + 查询增强**：与数据分析链路共用 `EvidenceRecallNode`、`QueryEnhanceNode`，解析业务术语并规范化查询。
+2. **Schema RAG 召回**（`SyncSchemaRecallService`）：对 `canonical_query` 做语义向量检索，召回相关表/列，并按外键补全关联表。
+3. **LLM 表名消歧**（`SyncTableResolveService` + `sync-table-resolve.txt`）：结合 Evidence 与 Schema，将业务语义名映射为物理表名，并硬校验表是否存在。
+4. **SQL 生成**（`SyncSqlGenerateService`）：基于 Schema 与用户原始过滤/JOIN 需求生成 `INSERT ... SELECT` 或 `CREATE TABLE`。
 
 > SeaTunnel 链路（`SeatunnelSyncService`）仍使用旧的 `sync-intent-parse` 直接抽表名，待后续统一接入同一套 Recall + Resolve。
+> Connector 能力分阶段目标（P0～P4，按 Source → Sink 组合）见 [SEATUNNEL_EXTENSION_ROADMAP.md — Connector 能力实现阶段](./SEATUNNEL_EXTENSION_ROADMAP.md#connector-能力实现阶段source--sink)。
 
 | 条件 | 输出 |
 |------|------|

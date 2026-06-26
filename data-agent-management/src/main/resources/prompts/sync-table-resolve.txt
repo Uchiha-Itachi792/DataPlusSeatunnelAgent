@@ -26,6 +26,9 @@ Schema 含 order_items（订单明细表）、orders（订单表）
 输出：\{"sourceTable": "order_items", "targetTable": "order_items_back", "relatedTables": []\}
 
 ---
+【参考信息 (Evidence)】
+{evidence}
+
 【数据库 Schema】
 {schema_info}
 

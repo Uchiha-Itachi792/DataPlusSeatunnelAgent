@@ -58,7 +58,8 @@ class SyncTaskNodeTest {
 	@Test
 	void apply_returnsGeneratorUnderOutputKey() throws Exception {
 		SyncTaskResult result = SyncTaskResult.syncSql("INSERT INTO `A` SELECT * FROM `order`;", "order", "A", 1);
-		when(tableSyncService.generateSyncSql(anyLong(), anyString(), anyString())).thenReturn(result);
+		when(tableSyncService.generateSyncSql(anyLong(), anyString(), anyString(), anyString(), anyString()))
+			.thenReturn(result);
 
 		OverAllState state = buildState();
 
@@ -72,7 +73,8 @@ class SyncTaskNodeTest {
 	@Test
 	void apply_saveFailure_stillReturnsGenerator() throws Exception {
 		SyncTaskResult result = SyncTaskResult.syncSql("INSERT INTO `A` SELECT * FROM `order`;", "order", "A", 1);
-		when(tableSyncService.generateSyncSql(anyLong(), anyString(), anyString())).thenReturn(result);
+		when(tableSyncService.generateSyncSql(anyLong(), anyString(), anyString(), anyString(), anyString()))
+			.thenReturn(result);
 		doThrow(new IllegalStateException("db error")).when(sqlCheckService).save(eq(result), eq(1L));
 
 		OverAllState state = buildState();

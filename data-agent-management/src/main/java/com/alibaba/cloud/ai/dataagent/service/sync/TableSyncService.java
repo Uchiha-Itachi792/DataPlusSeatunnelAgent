@@ -64,7 +64,27 @@ public class TableSyncService {
 	private final SyncRelatedTableExpander syncRelatedTableExpander;
 
 	public SyncTaskResult generateSyncSql(Long agentId, String userInput, String multiTurn) {
+		return generateSyncSql(agentId, userInput, multiTurn, null, null);
+	}
+
+	/**
+	 * 生成 MySQL 表同步 SQL（Schema RAG 召回 → LLM 表名消歧 → 关联表扩展 → SQL 生成）。
+	 * <p>
+	 * {@code canonicalQuery} 与 {@code evidence} 通常来自 Graph 上游 {@code QueryEnhanceNode}、
+	 * {@code EvidenceRecallNode}；为空时分别回退为 {@code userInput} 与无 Evidence。
+	 * </p>
+	 * @param agentId Agent ID
+	 * @param userInput 原始用户输入，用于关联表扩展与 SQL 生成（保留过滤/JOIN 等口语语义）
+	 * @param multiTurn 多轮对话上下文
+	 * @param canonicalQuery 规范化查询，用于 Schema 召回与表名消歧；为空时使用 {@code userInput}
+	 * @param evidence 业务知识 Evidence，供表名消歧参考；可为 null 或「无」
+	 * @return 同步 SQL 或错误信息
+	 */
+	public SyncTaskResult generateSyncSql(Long agentId, String userInput, String multiTurn, String canonicalQuery,
+			String evidence) {
 		try {
+			String recallQuery = StringUtils.hasText(canonicalQuery) ? canonicalQuery.trim() : userInput;
+
 			AgentDatasource agentDatasource = agentDatasourceService.getCurrentAgentDatasource(agentId);
 			Integer datasourceId = agentDatasource.getDatasourceId();
 			Datasource datasource = datasourceService.getDatasourceById(datasourceId);
@@ -76,13 +96,13 @@ public class TableSyncService {
 				return SyncTaskResult.error(SYNC_UNSUPPORTED_DATASOURCE_MSG);
 			}
 
-			SyncSchemaRecallResult recallResult = syncSchemaRecallService.recall(datasourceId, agentId, userInput);
+			SyncSchemaRecallResult recallResult = syncSchemaRecallService.recall(datasourceId, agentId, recallQuery);
 			if (recallResult.getTableDocuments().isEmpty()) {
 				return SyncTaskResult.error(SYNC_SCHEMA_RECALL_EMPTY_MSG);
 			}
 
-			SyncTableResolveDTO resolved = syncTableResolveService.resolve(userInput, multiTurn,
-					recallResult.getSchemaDTO());
+			SyncTableResolveDTO resolved = syncTableResolveService.resolve(recallQuery, multiTurn,
+					recallResult.getSchemaDTO(), evidence);
 			if (resolved == null) {
 				return SyncTaskResult.error(SYNC_TABLE_RESOLVE_FAILED_MSG);
 			}

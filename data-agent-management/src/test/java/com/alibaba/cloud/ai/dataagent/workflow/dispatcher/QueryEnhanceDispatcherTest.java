@@ -16,6 +16,7 @@
 package com.alibaba.cloud.ai.dataagent.workflow.dispatcher;
 
 import com.alibaba.cloud.ai.dataagent.common.TestFixtures;
+import com.alibaba.cloud.ai.dataagent.dto.prompt.IntentRecognitionOutputDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.QueryEnhanceOutputDTO;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,9 +44,20 @@ class QueryEnhanceDispatcherTest {
 	void apply_validQuery_routesToSchemaRecall() throws Exception {
 		OverAllState state = new OverAllState();
 		QueryEnhanceOutputDTO dto = TestFixtures.createQueryEnhanceDTO("查询用户数据");
-		state.updateState(Map.of(QUERY_ENHANCE_NODE_OUTPUT, dto));
+		IntentRecognitionOutputDTO intent = TestFixtures.createIntentDTO(INTENT_CLASSIFICATION_DATA_ANALYSIS);
+		state.updateState(Map.of(QUERY_ENHANCE_NODE_OUTPUT, dto, INTENT_RECOGNITION_NODE_OUTPUT, intent));
 
 		assertEquals(SCHEMA_RECALL_NODE, dispatcher.apply(state));
+	}
+
+	@Test
+	void apply_validSyncQuery_routesToSyncTaskNode() throws Exception {
+		OverAllState state = new OverAllState();
+		QueryEnhanceOutputDTO dto = TestFixtures.createQueryEnhanceDTO("把 order_items 同步到 order_items_back");
+		IntentRecognitionOutputDTO intent = TestFixtures.createIntentDTO(INTENT_CLASSIFICATION_SYNC_TASK);
+		state.updateState(Map.of(QUERY_ENHANCE_NODE_OUTPUT, dto, INTENT_RECOGNITION_NODE_OUTPUT, intent));
+
+		assertEquals(SYNC_TASK_NODE, dispatcher.apply(state));
 	}
 
 	@Test

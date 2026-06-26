@@ -15,6 +15,7 @@
  */
 package com.alibaba.cloud.ai.dataagent.workflow.node;
 
+import com.alibaba.cloud.ai.dataagent.dto.prompt.QueryEnhanceOutputDTO;
 import com.alibaba.cloud.ai.dataagent.dto.sync.SyncTaskResult;
 import com.alibaba.cloud.ai.dataagent.enums.TextType;
 import com.alibaba.cloud.ai.dataagent.service.sync.SqlCheckService;
@@ -30,6 +31,7 @@ import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
@@ -55,11 +57,14 @@ public class SyncTaskNode implements NodeAction {
 		String userInput = StateUtil.getStringValue(state, INPUT_KEY);
 		String agentIdStr = StateUtil.getStringValue(state, AGENT_ID);
 		String multiTurn = StateUtil.getStringValue(state, MULTI_TURN_CONTEXT, "(无)");
+		String canonicalQuery = resolveCanonicalQuery(state, userInput);
+		String evidence = StateUtil.getStringValue(state, EVIDENCE, "无");
 
 		log.info("Processing data sync task for agent: {}, input: {}", agentIdStr, userInput);
 
 		Long agentId = Long.valueOf(agentIdStr);
-		SyncTaskResult result = tableSyncService.generateSyncSql(agentId, userInput, multiTurn);
+		SyncTaskResult result = tableSyncService.generateSyncSql(agentId, userInput, multiTurn, canonicalQuery,
+				evidence);
 
 		boolean savedToApproval = false;
 		String saveError = null;
@@ -101,6 +106,20 @@ public class SyncTaskNode implements NodeAction {
 		}
 
 		return Flux.fromIterable(chunks);
+	}
+
+	private String resolveCanonicalQuery(OverAllState state, String userInput) {
+		try {
+			QueryEnhanceOutputDTO queryEnhance = StateUtil.getObjectValue(state, QUERY_ENHANCE_NODE_OUTPUT,
+					QueryEnhanceOutputDTO.class);
+			if (queryEnhance != null && StringUtils.hasText(queryEnhance.getCanonicalQuery())) {
+				return queryEnhance.getCanonicalQuery().trim();
+			}
+		}
+		catch (Exception ex) {
+			log.debug("No query enhance output in state, using raw user input for schema recall");
+		}
+		return userInput;
 	}
 
 }

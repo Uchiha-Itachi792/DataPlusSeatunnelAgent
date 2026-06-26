@@ -217,13 +217,13 @@ public class DataAgentConfiguration implements DisposableBean {
 
 		stateGraph.addEdge(START, INTENT_RECOGNITION_NODE)
 			.addConditionalEdges(INTENT_RECOGNITION_NODE, edge_async(new IntentRecognitionDispatcher()),
-					Map.of(EVIDENCE_RECALL_NODE, EVIDENCE_RECALL_NODE, SYNC_TASK_NODE, SYNC_TASK_NODE,
+					Map.of(EVIDENCE_RECALL_NODE, EVIDENCE_RECALL_NODE,
 							SEATUNNEL_CONFIG_GENERATE_NODE, SEATUNNEL_CONFIG_GENERATE_NODE, END, END))
 			.addEdge(SYNC_TASK_NODE, END)
 			.addEdge(SEATUNNEL_CONFIG_GENERATE_NODE, END)
 			.addEdge(EVIDENCE_RECALL_NODE, QUERY_ENHANCE_NODE)
 			.addConditionalEdges(QUERY_ENHANCE_NODE, edge_async(new QueryEnhanceDispatcher()),
-					Map.of(SCHEMA_RECALL_NODE, SCHEMA_RECALL_NODE, END, END))
+					Map.of(SCHEMA_RECALL_NODE, SCHEMA_RECALL_NODE, SYNC_TASK_NODE, SYNC_TASK_NODE, END, END))
 			.addConditionalEdges(SCHEMA_RECALL_NODE, edge_async(new SchemaRecallDispatcher()),
 					Map.of(TABLE_RELATION_NODE, TABLE_RELATION_NODE, END, END))
 

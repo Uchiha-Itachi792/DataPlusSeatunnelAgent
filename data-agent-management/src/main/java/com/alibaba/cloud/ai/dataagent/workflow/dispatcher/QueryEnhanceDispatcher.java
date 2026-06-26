@@ -15,14 +15,18 @@
  */
 package com.alibaba.cloud.ai.dataagent.workflow.dispatcher;
 
+import com.alibaba.cloud.ai.dataagent.dto.prompt.IntentRecognitionOutputDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.QueryEnhanceOutputDTO;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.EdgeAction;
 import com.alibaba.cloud.ai.dataagent.util.StateUtil;
 import lombok.extern.slf4j.Slf4j;
 
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_CLASSIFICATION_SYNC_TASK;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_RECOGNITION_NODE_OUTPUT;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.QUERY_ENHANCE_NODE_OUTPUT;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.SCHEMA_RECALL_NODE;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.SYNC_TASK_NODE;
 import static com.alibaba.cloud.ai.graph.StateGraph.END;
 
 /**
@@ -55,9 +59,19 @@ public class QueryEnhanceDispatcher implements EdgeAction {
 			return END;
 		}
 		else {
-			log.info("Query process output is valid, proceeding to schema recall");
-			return SCHEMA_RECALL_NODE;
+			String nextNode = routeByIntent(state);
+			log.info("Query process output is valid, proceeding to {}", nextNode);
+			return nextNode;
 		}
+	}
+
+	private String routeByIntent(OverAllState state) throws Exception {
+		IntentRecognitionOutputDTO intentResult = StateUtil.getObjectValue(state, INTENT_RECOGNITION_NODE_OUTPUT,
+				IntentRecognitionOutputDTO.class);
+		if (intentResult != null && INTENT_CLASSIFICATION_SYNC_TASK.equals(intentResult.getClassification())) {
+			return SYNC_TASK_NODE;
+		}
+		return SCHEMA_RECALL_NODE;
 	}
 
 }

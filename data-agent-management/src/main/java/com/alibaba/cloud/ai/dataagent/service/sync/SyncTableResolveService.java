@@ -39,16 +39,17 @@ public class SyncTableResolveService {
 
 	/**
 	 * 解析源表、目标表及关联表的物理表名。
-	 * @param userInput 用户同步需求
+	 * @param recallQuery 用于表名消歧的规范化查询（通常为 canonical_query）
 	 * @param multiTurn 多轮上下文
 	 * @param schemaDTO 召回后的 Schema
+	 * @param evidence 业务知识 Evidence，可为空
 	 * @return 解析结果；字段缺失或 LLM 无输出时返回 null
 	 */
-	public SyncTableResolveDTO resolve(String userInput, String multiTurn, SchemaDTO schemaDTO) {
+	public SyncTableResolveDTO resolve(String recallQuery, String multiTurn, SchemaDTO schemaDTO, String evidence) {
 		if (schemaDTO == null || schemaDTO.getTable() == null || schemaDTO.getTable().isEmpty()) {
 			return null;
 		}
-		String prompt = PromptHelper.buildSyncTableResolvePrompt(multiTurn, userInput, schemaDTO);
+		String prompt = PromptHelper.buildSyncTableResolvePrompt(multiTurn, recallQuery, schemaDTO, evidence);
 		String llmOutput = llmService.blockToString(llmService.callUser(prompt));
 		if (!StringUtils.hasText(llmOutput)) {
 			return null;
@@ -56,7 +57,7 @@ public class SyncTableResolveService {
 		SyncTableResolveDTO resolved = jsonParseUtil.tryConvertToObject(llmOutput, SyncTableResolveDTO.class);
 		if (resolved == null || !StringUtils.hasText(resolved.getSourceTable())
 				|| !StringUtils.hasText(resolved.getTargetTable())) {
-			log.warn("Sync table resolve incomplete for input: {}", userInput);
+			log.warn("Sync table resolve incomplete for input: {}", recallQuery);
 			return null;
 		}
 		log.info("Resolved sync tables: source={}, target={}, related={}", resolved.getSourceTable(),

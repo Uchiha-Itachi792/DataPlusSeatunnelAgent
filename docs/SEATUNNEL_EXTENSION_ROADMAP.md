@@ -271,6 +271,683 @@ MCP Tool（可选）
 
 ---
 
+## Connector 能力实现阶段（Source → Sink）
+
+> 上文「阶段 0～4」聚焦**平台工程**（意图、审核、Gateway）；本节聚焦 **Connector 能力**按 Source → Sink 组合的演进路线。
+> 目标不是覆盖 [SeaTunnel 全部 Source/Sink Connector](https://seatunnel.apache.org/zh-CN/docs/2.3.13/connectors/source)，而是**白名单式**渐进支持企业常用组合。
+>
+> **每个阶段（P0～P4）均包含：** ① 实现目标 ② 实现方案思路 ③ 测试方案。
+
+### 实现总原则
+
+| 原则 | 说明 |
+|------|------|
+| **白名单制** | 只实现企业常用 Source → Sink 组合；新增组合须注册到 `SeatunnelConnectorRegistry` |
+| **生成 ≠ 执行** | Agent 生成 conf 文本；Worker/Gateway 须安装对应 Connector JAR 才能真正跑作业 |
+| **与 SQL 链路分工** | 同库小表轻量同步仍走 `SyncTaskNode`；SeaTunnel 负责跨源、大批量、CDC、异构 |
+| **执行通道可演进** | 近期 HTTP Gateway；中期 **MQ + SeaTunnel Worker**；长期多 Worker 队列调度 |
+| **LLM 边界** | JDBC 复杂 query/transform 可用 LLM；CDC 核心参数、MQ 连接信息宜模板/配置注入 |
+| **凭证安全** | conf 落库可含真实连接信息；审核页脱敏展示；MQ 消息体不传全文 conf |
+
+### 阶段代号与依赖关系
+
+| 代号 | 含义 | 前置依赖 |
+|------|------|----------|
+| **P0** | 当前 MVP 完善（MySQL 同库 Jdbc BATCH） | 平台阶段 1（conf 生成 + 落库）已基本完成 |
+| **P1** | JDBC 跨源批同步 | P0 + 平台阶段 3（Gateway 执行闭环） |
+| **P2** | 异构批同步 + 数仓/OLAP Sink | P1 |
+| **P3** | CDC / 增量 / 流式 | P1 + Gateway/Worker 长作业能力 |
+| **P4** | 消息队列 / 文件 / 扩展拓扑 | P1；部分组合依赖 P3 |
+
+图例：**NL** = 支持自然语言生成 conf；**Exec** = 执行侧需安装的 SeaTunnel Connector 插件。
+
+### 共性架构（P1 起逐步落地）
+
+```mermaid
+flowchart TB
+  NL[用户自然语言] --> IR[IntentRecognitionNode]
+  IR --> SC[SeatunnelConfigGenerateNode]
+  SC --> Resolve[SyncDatasourceResolveService<br/>源/汇数据源 + 表名]
+  Resolve --> Recall[SyncSchemaRecallService<br/>按数据源分别召回]
+  Recall --> TableResolve[SyncTableResolveService<br/>表名消歧]
+  TableResolve --> Profile[SeatunnelSyncProfileRouter<br/>BATCH / CDC / 异构 / MQ]
+  Profile -->|简单| Template[SeatunnelConfigBuilder / CdcConfBuilder]
+  Profile -->|复杂| LLM[SeatunnelConfGenerateService]
+  Template --> Merge[Conf 合并]
+  LLM --> Merge
+  Merge --> Post[SeatunnelConfPostProcessor<br/>SOURCE/SINK 凭证注入]
+  Post --> Valid[SeatunnelConfValidator<br/>白名单校验]
+  Valid --> Save[SeatunnelTaskService.save]
+  Save --> DB[(seatunnel_task)]
+  DB --> Exec[Gateway 或 MQ Worker 执行]
+```
+
+| 组件 | 职责 | 现有 / 新建 |
+|------|------|-------------|
+| `SeatunnelConnectorRegistry` | 注册允许的 Source/Sink Connector 及 SyncProfile | **新建** |
+| `SeatunnelConnectorAdapter` | `Datasource` → HOCON source/sink 片段 | **新建**（P1） |
+| `SyncDatasourceResolveService` | NL → sourceDsId / sinkDsId | **新建**（P1） |
+| `SeatunnelSyncProfileRouter` | 演进自 `SeatunnelSyncComplexityRouter` | **改造** |
+| `SeatunnelConfPostProcessor` | 双端占位符注入 | **改造**（P1） |
+| `SeatunnelConfValidator` | 黑名单 → 白名单 + Profile 规则 | **改造** |
+| `CdcConfBuilder` | MySQL-CDC / PG-CDC 模板 | **新建**（P3） |
+| `ConnectorProfile` 实体 | Kafka topic、S3 bucket 等非 JDBC 配置 | **新建**（P4） |
+
+---
+
+### P0｜当前 MVP 完善（MySQL 同库 Jdbc BATCH）
+
+#### 1. 实现目标
+
+**业务目标**
+
+- 用户说「用 SeaTunnel 把 orders 同步到 orders_backup」，系统能生成合法 HOCON conf、写入 `seatunnel_task`、在审核页预览并提交执行。
+- 简单全表同步走**模板**（低延迟、无 LLM 幻觉）；含 JOIN/过滤/关联表走 **LLM** 路径。
+- 与 SQL 链路意图分流清晰：《数据同步任务》→ SQL；《SeaTunnel同步任务》→ conf。
+
+**技术目标**
+
+| 目标项 | 当前状态 | P0 完成标准 |
+|--------|----------|-------------|
+| 意图路由 | ✅ 已实现 | 《SeaTunnel同步任务》稳定路由到 `SeatunnelConfigGenerateNode` |
+| conf 生成 | ✅ 模板 + LLM | JOIN/WHERE 语义正确写入 `source.Jdbc.query`（修复 `docs/缺陷.md` 已知问题） |
+| 表名解析 | ⚠️ 旧 `sync-intent-parse` | 接入 Schema RAG + `SyncTableResolveService`（对齐 SQL 链路） |
+| 任务落库 | ✅ `seatunnel_task` | `sourceDatasourceId` / `sinkDatasourceId` 字段正确写入（同库时相同 ID） |
+| 审核执行 | ⚠️ 部分 | Gateway 配置后可提交；状态轮询、日志、失败信息回写 |
+| Connector 范围 | MySQL Jdbc BATCH | Validator 继续禁止 Kafka/CDC/STREAMING |
+
+**Source → Sink 矩阵**
+
+| # | Source | Sink | 模式 | NL | Exec 插件 |
+|---|--------|------|------|-----|-----------|
+| 0.1 | Jdbc (MySQL) | Jdbc (MySQL) | BATCH | ✅ 模板 | connector-jdbc |
+| 0.2 | Jdbc (MySQL) | Jdbc (MySQL) | BATCH | ✅ LLM | connector-jdbc |
+
+#### 2. 实现方案思路
+
+**2.1 表名与 Schema 对齐（最高优先级）**
+
+```
+SeatunnelSyncService.generateConf()
+  ├─ 复用 SyncSchemaRecallService.recall(datasourceId, agentId, recallQuery)
+  ├─ 复用 SyncTableResolveService.resolve(recallQuery, multiTurn, schema, evidence)
+  ├─ 复用 SyncRelatedTableExpander.expand(...)
+  └─ 废弃或降级 sync-intent-parse 为兜底
+```
+
+- Graph 侧：可选让 SeaTunnel 短链也经过 `EvidenceRecallNode` + `QueryEnhanceNode`（与 SQL 链路一致），或 Node 内直接调用上述 Service 并传入 state 中的 `canonical_query` / `evidence`。
+- `SeatunnelConfigGenerateNode` 从 state 读取 `INPUT_KEY`、`MULTI_TURN_CONTEXT`、`CANONICAL_QUERY`（若有）、Evidence 输出。
+
+**2.2 模板 / LLM 分流（保持现有逻辑，修 Prompt）**
+
+- `SeatunnelSyncComplexityRouter`：有关联表 / 过滤语义 / 目标表不存在 → LLM。
+- 更新 `seatunnel-conf-generate.txt`：强调 WHERE 必须出现在 query 中；JOIN 表必须在 query 内连接。
+- `SeatunnelConfValidator`：校验 query 非空（LLM 路径）、禁止 STREAMING。
+
+**2.3 执行闭环**
+
+- `SeatunnelTaskService.execute()`：提交后标记 RUNNING，**禁止** submit 成功即 SUCCESS。
+- 新增 `SeatunnelTaskStatusPoller`（或 Gateway 回调）：轮询 `GET /api/jobs/{id}` → 更新 SUCCESS/FAILED + `error_msg`。
+- 配置项：`spring.ai.alibaba.data-agent.seatunnel-gateway.*`（已有 `SeatunnelGatewayProperties`）。
+
+**2.4 涉及类（改动清单）**
+
+| 类 / 文件 | 改动 |
+|-----------|------|
+| `SeatunnelSyncService` | 接入 Recall + Resolve；签名增加 canonicalQuery / evidence |
+| `SeatunnelConfigGenerateNode` | 从 state 传递 canonicalQuery / evidence |
+| `DataAgentConfiguration` | 可选：SeaTunnel 短链增加 Evidence + QueryEnhance 边 |
+| `seatunnel-conf-generate.txt` | 修复 JOIN + WHERE 示例与约束 |
+| `SeatunnelTaskService` | 执行状态机修正 |
+| `SeatunnelTaskStatusPoller` | **新建** |
+| `SeatunnelTask.vue` | 展示 exec 日志、错误信息 |
+
+#### 3. 测试方案
+
+**3.1 单元测试（Mock，不依赖 LLM/DB/Gateway）**
+
+| 测试类 | 用例要点 |
+|--------|----------|
+| `SeatunnelSyncComplexityRouterTest` | 模板/LLM 边界：有关联表、含「排除」、CDC 关键词 |
+| `SeatunnelConfigBuilderTest` | 输出含 env/source/sink；query 为 `SELECT *`；凭证来自 DbConfig |
+| `SeatunnelConfValidatorTest` | 缺块报错；含 Kafka/STREAMING 拒绝 |
+| `SeatunnelConfPostProcessorTest` | 占位符替换、HOCON 转义 |
+| `SeatunnelConfGenerateServiceTest` | Mock LLM 返回 → validate 通过；含 Kafka 拒绝 |
+| `SeatunnelSyncServiceTest` | 模板路径不调 LLM；LLM 路径调 generateService；表不存在返回 error |
+| `SyncTableResolveServiceTest` | 业务名「订单明细」→ `order_items`（P0 新增/补充） |
+| `SeatunnelConfigGenerateNodeTest` | Node 输出流 + save 被调用 |
+| `IntentRecognitionDispatcherTest` | 《SeaTunnel同步任务》路由正确 |
+
+**3.2 集成测试（Testcontainers / H2）**
+
+| 场景 | 验证点 |
+|------|--------|
+| 保存任务 | `SeatunnelTaskService.save()` → `seatunnel_task` 有 PENDING 记录 |
+| 执行 Mock Gateway | WireMock 模拟 `POST /api/jobs` 返回 jobId → 状态 RUNNING |
+| 表名校验 | 对接 H2 schema，源表不存在时返回明确错误 |
+
+**3.3 端到端 / 手工验收**
+
+| # | 输入 | 预期 |
+|---|------|------|
+| E2E-0.1 | 「用 SeaTunnel 把 orders 同步到 orders_backup」 | `generationMode=TEMPLATE`；conf 含 `SELECT * FROM orders`；`seatunnel_task` PENDING |
+| E2E-0.2 | 「用 SeaTunnel 把 order_items 和 products 关联，排除 status=0，同步到 order_items_back」 | LLM 路径；query 含 JOIN **且** WHERE status 条件 |
+| E2E-0.3 | 「把订单明细同步到 order_items_back」 | Resolve 映射到 `order_items`，不报「源表不存在」 |
+| E2E-0.4 | 审核页执行（Gateway 已配置） | 状态 RUNNING → SUCCESS/FAILED；失败时有 error_msg |
+| E2E-0.5 | 「同步 orders 到 backup」（未提 SeaTunnel） | 仍走 SQL 链路 → `sql_check` |
+
+**3.4 回归要求**
+
+- 现有 `SyncTaskNode` / `TableSyncService` 测试全部通过，SeaTunnel 改动不得破坏 SQL 链路。
+
+---
+
+### P1｜JDBC 跨源批同步
+
+#### 1. 实现目标
+
+**业务目标**
+
+- 支持 Agent 绑定的**两个不同 JDBC 数据源**之间批同步，例如：「把 A 数据源 orders 同步到 B 数据源 orders_backup」。
+- 支持 MySQL ↔ PostgreSQL 等异构 JDBC 组合（P1 先打通 conf 生成与双端凭证注入；复杂类型映射可留 P2）。
+- 用户无需手写 JDBC URL；连接信息从 `Datasource` + `DatasourceTypeHandler` 自动映射。
+
+**技术目标**
+
+| 目标项 | 完成标准 |
+|--------|----------|
+| 双数据源解析 | NL 或配置解析出 sourceDsId ≠ sinkDsId |
+| Connector 适配 | 每种 JDBC dialect 有 `SeatunnelConnectorAdapter` 实现 |
+| conf 结构 | source/sink 使用不同 url/user/password |
+| Schema 召回 | 源表在 sourceDs 校验，目标表在 sinkDs 校验 |
+| 白名单 | Registry 仅允许已实现的 JDBC 组合 |
+
+**Source → Sink 矩阵**
+
+| # | Source | Sink | 模式 | NL | Exec 插件 |
+|---|--------|------|------|-----|-----------|
+| 1.1 | Jdbc (MySQL) | Jdbc (MySQL) | BATCH | ✅ | connector-jdbc |
+| 1.2 | Jdbc (MySQL) | Jdbc (PostgreSQL) | BATCH | ✅ | connector-jdbc |
+| 1.3 | Jdbc (PostgreSQL) | Jdbc (MySQL) | BATCH | ✅ | connector-jdbc |
+| 1.4 | Jdbc (PostgreSQL) | Jdbc (PostgreSQL) | BATCH | ✅ | connector-jdbc |
+| 1.5 | Jdbc (Oracle) | Jdbc (MySQL/PG) | BATCH | ⚠️ | connector-jdbc |
+| 1.6 | Jdbc (SQL Server) | Jdbc (MySQL/PG) | BATCH | ⚠️ | connector-jdbc |
+| 1.7 | Jdbc (Dameng) | Jdbc (MySQL/PG) | BATCH | ⚠️ | connector-jdbc |
+| 1.8 | Jdbc (Hive/HiveJdbc) | Jdbc (MySQL/PG) | BATCH | ⚠️ | jdbc + hive |
+
+#### 2. 实现方案思路
+
+**2.1 双数据源解析**
+
+- 新建 `SyncDatasourceResolveDTO`：`sourceDatasourceName`、`sinkDatasourceName`（可选，默认 current active 为 source）。
+- 新建 `SyncDatasourceResolveService`：
+  - 输入：userInput、multiTurn、`List<AgentDatasource>`（Agent 已绑定数据源列表）。
+  - LLM Prompt：从「A 库 / B 库 / 生产库 / 备份库」等描述匹配 datasource 名称或 databaseName。
+  - 硬校验：解析出的 ID 必须属于当前 Agent；source ≠ sink（跨源场景）。
+- 扩展 `sync-intent-parse.txt` 或新建 `sync-datasource-resolve.txt`。
+
+**2.2 Connector 适配层**
+
+```java
+// 概念接口
+interface SeatunnelConnectorAdapter {
+  String connectorName();  // "Jdbc"
+  String seatunnelPluginName();  // 与 Gateway 安装一致
+  String buildSourceBlock(Datasource ds, SyncContext ctx);
+  String buildSinkBlock(Datasource ds, SyncContext ctx);
+  Set<SyncProfile> supportedProfiles();
+}
+```
+
+- 实现类：`MysqlJdbcConnectorAdapter`、`PostgreSqlJdbcConnectorAdapter`、`OracleJdbcConnectorAdapter` 等。
+- 复用 `DatasourceTypeHandler.toDbConfig()` 获取 url/driver/username/password/schema。
+- `SeatunnelConnectorRegistry`：启动时注册 `(sourceType, sinkType) → Adapter 对` + 允许的 SyncProfile。
+
+**2.3 conf 生成流程改造**
+
+```
+SeatunnelSyncService
+  ├─ resolveDatasources(agentId, userInput) → sourceDs, sinkDs
+  ├─ recall + resolve 表名（sourceDs 上查源表，sinkDs 上查目标表）
+  ├─ profileRouter → JDBC_BATCH_SIMPLE | JDBC_BATCH_CROSS
+  ├─ 简单：SeatunnelConfigBuilder.build(sourceDs, sinkDs, sourceTable, targetTable)
+  ├─ 复杂：LLM 只生成 query/transform；Adapter 注入 source/sink 块
+  └─ postProcessor.inject(sourceDbConfig, sinkDbConfig)
+```
+
+**2.4 PostProcessor 占位符扩展**
+
+| 占位符 | 替换来源 |
+|--------|----------|
+| `__SOURCE_JDBC_URL__` | source `DbConfigBO.url` |
+| `__SOURCE_JDBC_USER__` / `__SOURCE_JDBC_PASSWORD__` | source 凭证 |
+| `__SINK_JDBC_URL__` 等 | sink 凭证 |
+| `__SOURCE_JDBC_DATABASE__` / `__SINK_JDBC_DATABASE__` | 各自 schema |
+
+Prompt 改为双端占位符；Validator 校验 source/sink 块均存在。
+
+**2.5 配置项**
+
+```yaml
+spring.ai.alibaba.data-agent.seatunnel:
+  enabled-connectors: jdbc  # P1 仅 jdbc
+  cross-datasource-enabled: true
+  gateway:
+    installed-plugins: jdbc  # 与 Gateway 对齐，生成时校验
+```
+
+#### 3. 测试方案
+
+**3.1 单元测试**
+
+| 测试类 | 用例 |
+|--------|------|
+| `SyncDatasourceResolveServiceTest` | 「A 库→B 库」匹配两个 datasource；仅一个 datasource 时报错 |
+| `MysqlJdbcConnectorAdapterTest` | source/sink 块含正确 driver、url 格式 |
+| `PostgreSqlJdbcConnectorAdapterTest` | PG driver 为 `org.postgresql.Driver` |
+| `SeatunnelConnectorRegistryTest` | 未注册组合拒绝；MySQL→PG 允许 |
+| `SeatunnelConfPostProcessorTest` | 双端占位符均替换 |
+| `SeatunnelSyncServiceTest` | sourceDsId ≠ sinkDsId；非 MySQL  dialect 不再整体拒绝（按 Registry） |
+
+**3.2 集成测试**
+
+| 场景 | 环境 | 验证 |
+|------|------|------|
+| 跨库 conf 落库 | H2 两个 datasource 或 Testcontainers MySQL×2 | `seatunnel_task` 双 ID 正确 |
+| Gateway 提交 | WireMock | conf 中 source/sink url 不同 |
+
+**3.3 端到端验收**
+
+| # | 输入 | 预期 |
+|---|------|------|
+| E2E-1.1 | Agent 绑定 dsA(MySQL)、dsB(MySQL)，「把 dsA 的 orders 同步到 dsB 的 orders_backup」 | 双 url；执行后 B 库有数据 |
+| E2E-1.2 | MySQL → PostgreSQL | conf 中 driver 分别为 mysql / postgres |
+| E2E-1.3 | 仅绑定一个数据源却要求跨库 | 明确错误提示 |
+
+**3.4 执行侧验证**
+
+- Gateway 机器安装 `connector-jdbc`；分别能连 source/sink。
+- 失败场景：sink 连不通 → FAILED + 可读 error_msg。
+
+---
+
+### P2｜异构批同步 + 数仓 / OLAP Sink
+
+#### 1. 实现目标
+
+**业务目标**
+
+- 业务库（MySQL）→ 数仓/OLAP（Doris、StarRocks、ClickHouse、Hive、Elasticsearch）的全量批同步。
+- 支持字段映射、类型转换（如 MySQL `DATETIME` → ClickHouse `DateTime`）。
+- 复杂场景仍支持 NL 描述过滤/JOIN，但 sink 侧 Connector 块由 Adapter 固定生成。
+
+**技术目标**
+
+| 目标项 | 完成标准 |
+|--------|----------|
+| 专用 Sink Adapter | Doris/StarRocks/ClickHouse/Hive/ES 各有 Adapter |
+| Transform | conf 可含 `transform { Sql / FieldMapper }` |
+| SyncProfile | 新增 `JDBC_BATCH_HETEROGENEOUS` |
+| Gateway 插件对齐 | `installed-plugins` 含 doris、starrocks 等 |
+
+**Source → Sink 矩阵**
+
+| # | Source | Sink | 模式 | NL | Exec 插件 |
+|---|--------|------|------|-----|-----------|
+| 2.1 | Jdbc (MySQL) | Doris | BATCH | ✅ | jdbc + doris |
+| 2.2 | Jdbc (MySQL) | StarRocks | BATCH | ✅ | jdbc + starrocks |
+| 2.3 | Jdbc (MySQL/PG) | ClickHouse | BATCH | ⚠️ | jdbc + clickhouse |
+| 2.4 | Jdbc (MySQL) | Hive | BATCH | ⚠️ | jdbc + hive |
+| 2.5 | Jdbc (MySQL) | Elasticsearch | BATCH | ⚠️ | jdbc + elasticsearch |
+| 2.6 | Jdbc (任意) | Jdbc (任意) | BATCH | ✅ + transform | 视 sink 而定 |
+
+#### 2. 实现方案思路
+
+**2.1 扩展 Adapter 体系**
+
+- `DorisSinkAdapter`、`StarRocksSinkAdapter` 等继承或组合 `JdbcConnectorAdapter`（部分 sink 仍用 Jdbc 协议但参数不同，如 Doris fenodes）。
+- Registry 注册 `(MYSQL, DORIS)`、`(MYSQL, STARROCKS)` 等组合。
+
+**2.2 Profile 路由**
+
+- `SeatunnelSyncProfileRouter`（演进自 ComplexityRouter）：
+  - 源汇 dialect 相同 + 无 transform 语义 → `JDBC_BATCH_CROSS`（P1）
+  - dialect 不同或用户提及「映射/转换/字段」→ `JDBC_BATCH_HETEROGENEOUS`
+- 异构 Prompt 独立文件 `seatunnel-conf-generate-heterogeneous.txt`：LLM 只输出 query + transform，**禁止**写 sink connector 名。
+
+**2.3 类型映射（可选增强）**
+
+- `ColumnTypeMappingService`：根据 source/sink 列 metadata 生成默认 FieldMapper 建议。
+- 审核页高亮 transform 块，便于 DBA 人工修正。
+
+**2.4 Validator 白名单化**
+
+- 按 Profile 允许 connector 组合，例如 `JDBC_BATCH_HETEROGENEOUS` 允许 `Jdbc` source + `Doris` sink。
+- 移除对 Doris/StarRocks 的全局禁止（P0 黑名单改为 Profile 白名单）。
+
+#### 3. 测试方案
+
+**3.1 单元测试**
+
+| 测试类 | 用例 |
+|--------|------|
+| `DorisSinkAdapterTest` | sink 块含 fenodes / database / table |
+| `SeatunnelSyncProfileRouterTest` | MySQL→Doris 命中 HETEROGENEOUS |
+| `SeatunnelConfValidatorTest` | MySQL→Doris conf 通过；含 FakeSource 拒绝 |
+| `SeatunnelConfGenerateServiceTest`（异构 Prompt） | Mock LLM 含 transform → validate 通过 |
+
+**3.2 集成 / E2E**
+
+| 场景 | 验证 |
+|------|------|
+| MySQL → Doris 小表 | Gateway 执行 SUCCESS；Doris 表行数与 source 一致 |
+| 含字段映射 | transform 块存在；目标表列类型正确 |
+| Gateway 未装 doris 插件 | 提交失败，error_msg 提示缺少 connector |
+
+**3.3 性能抽检（非 CI 必跑）**
+
+- 10 万行 MySQL → Doris：`parallelism > 1` 可配置；记录耗时与 Gateway 资源占用。
+
+---
+
+### P3｜CDC / 增量 / 流式
+
+#### 1. 实现目标
+
+**业务目标**
+
+- 支持「增量同步」「实时同步」「CDC」类诉求，如 MySQL binlog → 目标库 / Kafka。
+- 长作业可启动、查状态、停止；非一次性 BATCH。
+
+**技术目标**
+
+| 目标项 | 完成标准 |
+|--------|----------|
+| sync_mode | `seatunnel_task` 增加 `sync_mode`：BATCH / CDC / STREAMING |
+| conf | `job.mode = STREAMING`；source 为 MySQL-CDC / PostgreSQL-CDC |
+| 生成方式 | CDC **模板为主**，LLM 仅解析表名/库名 |
+| 执行 | Worker 支持 stop；状态 RUNNING/STOPPED；checkpoint 可配置 |
+| Validator | 仅 CDC Profile 允许 STREAMING 与 CDC connector |
+
+**Source → Sink 矩阵**
+
+| # | Source | Sink | 模式 | NL | Exec 插件 |
+|---|--------|------|------|-----|-----------|
+| 3.1 | MySQL-CDC | Jdbc (MySQL) | STREAMING | ⚠️ 模板 | cdc-mysql + jdbc |
+| 3.2 | MySQL-CDC | Doris/StarRocks | STREAMING | ⚠️ 模板 | cdc-mysql + doris/sr |
+| 3.3 | MySQL-CDC | Kafka | STREAMING | ⚠️ 模板 | cdc-mysql + kafka |
+| 3.4 | PostgreSQL-CDC | Jdbc (PG/MySQL) | STREAMING | ⚠️ 模板 | cdc-postgres + jdbc |
+| 3.5 | PostgreSQL-CDC | Kafka | STREAMING | ⚠️ 模板 | cdc-postgres + kafka |
+| 3.6 | Oracle-CDC | Jdbc | STREAMING | ❌→⚠️ | cdc-oracle + jdbc |
+| 3.7 | SQL Server-CDC | Jdbc | STREAMING | ❌→⚠️ | cdc-sqlserver + jdbc |
+
+#### 2. 实现方案思路
+
+**2.1 意图与 Profile**
+
+- `intent-recognition.txt` 增加 CDC 语义样例：「增量」「实时」「binlog」「CDC」→ 仍归《SeaTunnel同步任务》，但 `SeatunnelSyncProfileRouter` 输出 `CDC_STREAMING`。
+- 与 BATCH 分流互斥：命中 CDC 语义则不走 BATCH 模板。
+
+**2.2 CdcConfBuilder（模板，禁止 LLM 拼核心参数）**
+
+```hocon
+env {
+  job.mode = "STREAMING"
+  checkpoint.interval = ${checkpointInterval}
+}
+source {
+  MySQL-CDC {
+    hostname = "__SOURCE_HOST__"
+    port = __SOURCE_PORT__
+    username = "__SOURCE_USER__"
+    password = "__SOURCE_PASSWORD__"
+    database-name = "__SOURCE_DATABASE__"
+    table-name = "__SOURCE_TABLE__"
+    server-id = __CDC_SERVER_ID__      # 从配置分配，非 LLM
+    startup.mode = "__CDC_STARTUP_MODE__" # initial / latest / specific-offset
+  }
+}
+sink { ... }  # 由 Sink Adapter 注入
+```
+
+- `server-id` 由 `SeatunnelCdcServerIdAllocator` 从配置池分配，避免冲突。
+- `startup.mode` 默认 `initial`；高级 offset 走审核页表单，不进 NL。
+
+**2.3 表结构扩展**
+
+```sql
+ALTER TABLE seatunnel_task ADD COLUMN sync_mode VARCHAR(32) DEFAULT 'BATCH';
+ALTER TABLE seatunnel_task ADD COLUMN cdc_startup_mode VARCHAR(32);
+-- 可选：checkpoint_path, stop_time
+```
+
+**2.4 执行与状态机**
+
+```
+PENDING → RUNNING（CDC 提交成功）→ STOPPED（用户停止）/ FAILED
+BATCH：RUNNING → SUCCESS/FAILED（作业结束）
+```
+
+- Gateway API 扩展：`POST /api/jobs/{id}/stop`、`GET /api/jobs/{id}` 返回 `status=RUNNING` 长时间。
+- `SeatunnelTaskStatusPoller`：CDC 任务轮询间隔可配置（如 30s）。
+
+**2.5 MQ 架构（P3 推荐同步落地）**
+
+- CDC 长作业更适合 MQ + Worker，避免 HTTP 超时。
+- 消息体：`{ taskId, syncMode: "CDC" }`；Worker 拉 conf 执行并回调状态。
+
+#### 3. 测试方案
+
+**3.1 单元测试**
+
+| 测试类 | 用例 |
+|--------|------|
+| `CdcConfBuilderTest` | 含 MySQL-CDC 必填项；无 LLM 参与 |
+| `SeatunnelSyncProfileRouterTest` | 「增量同步」→ CDC_STREAMING |
+| `SeatunnelConfValidatorTest` | STREAMING 仅在 CDC Profile 通过；BATCH Profile 拒绝 STREAMING |
+| `SeatunnelCdcServerIdAllocatorTest` | 并发分配不重复 |
+
+**3.2 集成测试**
+
+| 场景 | 环境 | 验证 |
+|------|------|------|
+| CDC conf 落库 | Mock | sync_mode=CDC；conf 含 MySQL-CDC |
+| 状态机 | Mock Gateway | RUNNING 保持；stop 后 STOPPED |
+
+**3.3 E2E（需真实 MySQL binlog + Gateway CDC 插件）**
+
+| # | 步骤 | 预期 |
+|---|------|------|
+| E2E-3.1 | 源表 INSERT 一行 → 启动作业 | 目标库延迟内可见新行 |
+| E2E-3.2 | 停止作业 → 再 INSERT | 目标库不再更新 |
+| E2E-3.3 | 重启作业 startup.mode=latest | 仅同步增量 |
+
+**3.4 运维测试**
+
+- server-id 冲突场景：两任务同库不同 server-id，均 RUNNING。
+- Gateway 未装 cdc-mysql：提交失败，提示安装插件。
+
+---
+
+### P4｜消息队列 / 文件 / 扩展拓扑
+
+#### 1. 实现目标
+
+**业务目标**
+
+- MySQL → Kafka（表快照或 CDC 下游）；Kafka → MySQL（消费入仓）。
+- MySQL → 文件（CSV/JSON 到 HDFS/S3/本地）；文件 → MySQL 导入。
+- NL 描述「同步到 topic xxx」「导出到 S3」，连接细节从配置读取。
+
+**技术目标**
+
+| 目标项 | 完成标准 |
+|--------|----------|
+| 非 JDBC 数据源模型 | `ConnectorProfile` 或 `Datasource.extraConfig` JSON |
+| Kafka Adapter | source/sink 块含 topic、bootstrap.servers |
+| 生成策略 | NL 解析拓扑 + 表单/配置注入连接信息 |
+| Registry | 独立注册 MQ/File 组合 |
+
+**Source → Sink 矩阵**
+
+| # | Source | Sink | 模式 | NL | Exec 插件 |
+|---|--------|------|------|-----|-----------|
+| 4.1 | Jdbc (MySQL/PG) | Kafka | BATCH | ⚠️ | jdbc + kafka |
+| 4.2 | Kafka | Jdbc (MySQL/PG) | BATCH/STREAMING | ⚠️ | kafka + jdbc |
+| 4.3 | Jdbc (MySQL) | RocketMQ | BATCH | ⚠️ | jdbc + rocketmq |
+| 4.4 | Jdbc | LocalFile/Hdfs/S3 | BATCH | ⚠️ 表单 | jdbc + file |
+| 4.5 | LocalFile/S3 | Jdbc | BATCH | ⚠️ | file + jdbc |
+| 4.6 | Jdbc (MySQL) | Redis | BATCH | ❌ | jdbc + redis |
+| 4.7 | MongoDB | Jdbc | BATCH | ❌ | mongodb + jdbc |
+
+#### 2. 实现方案思路
+
+**2.1 数据模型**
+
+```sql
+-- 方案 A：扩展 datasource 表
+ALTER TABLE datasource ADD COLUMN extra_config JSON COMMENT 'Kafka: bootstrap, topic; S3: bucket, path';
+
+-- 方案 B：独立表 connector_profile
+CREATE TABLE connector_profile (
+  id INT PRIMARY KEY,
+  agent_id INT,
+  connector_type VARCHAR(32),  -- kafka, s3, ...
+  config_json JSON,
+  ...
+);
+```
+
+- Agent 绑定 JDBC 数据源 + Kafka Profile（逻辑源/汇）。
+
+**2.2 SyncDatasourceResolve 扩展**
+
+- 解析结果增加 `sourceProfileId` / `sinkProfileId`（非 JDBC 时使用）。
+- Prompt 样例：「同步 orders 到 Kafka 订单 topic」→ source=MySQL ds，sink=Kafka profile。
+
+**2.3 Adapter**
+
+- `KafkaSourceAdapter` / `KafkaSinkAdapter`：从 extra_config 读 bootstrap、topic、format。
+- `S3FileSinkAdapter`：path、bucket、file_format。
+- conf 生成：**模板为主**；LLM 不参与 broker 地址。
+
+**2.4 前端**
+
+- 数据源管理页：新增 Kafka/S3 类型配置表单。
+- 审核页：非 JDBC sink 展示 topic/path 摘要。
+
+**2.5 与 P3 关系**
+
+- MySQL-CDC → Kafka 可在 P3 用 CDC 模板 + Kafka Sink Adapter 组合实现，P4 完善 Kafka 作为 **BATCH source**（全量快照入 MQ）。
+
+#### 3. 测试方案
+
+**3.1 单元测试**
+
+| 测试类 | 用例 |
+|--------|------|
+| `KafkaSinkAdapterTest` | 块含 topic、bootstrap.servers（来自 extra_config） |
+| `SyncDatasourceResolveServiceTest` | 解析 Kafka profile 名称 |
+| `SeatunnelConnectorRegistryTest` | `(MYSQL, KAFKA)` 已注册 |
+
+**3.2 集成测试**
+
+| 场景 | 环境 | 验证 |
+|------|------|------|
+| MySQL → Kafka | Testcontainers Kafka | 消息条数 = 源表行数 |
+| Kafka → MySQL | 同上 | 目标表数据正确 |
+| S3 导出 | LocalStack 或 MinIO | 文件存在且可读 |
+
+**3.3 E2E**
+
+| # | 输入 | 预期 |
+|---|------|------|
+| E2E-4.1 | 「把 orders 同步到 Kafka 的 orders_topic」 | conf source=Jdbc sink=Kafka；topic 正确 |
+| E2E-4.2 | 未配置 Kafka Profile | 提示先配置 Connector Profile |
+
+---
+
+### 附录 A：不在 NL 目标内的 Connector
+
+| Source | Sink | 处理方式 |
+|--------|------|----------|
+| GitHub / Notion / Slack / Jira 等 | 任意 | 审核页手工粘贴 conf |
+| 任意 | Console / Email / 钉钉 | 不纳入 Agent |
+| FakeSource | 任意 | 仅 SeaTunnel 本地测试 |
+
+---
+
+### 附录 B：与 SQL 链路的分工
+
+| Source → Sink | 建议链路 |
+|---------------|----------|
+| MySQL → MySQL（同库、小表、简单全量） | **SQL**（`SyncTaskNode`） |
+| MySQL → MySQL（跨数据源 / 大表 / 并行） | **SeaTunnel** |
+| 含异构 / CDC / MQ / 文件 | **仅 SeaTunnel** |
+
+---
+
+### 附录 C：执行架构演进（Gateway → MQ）
+
+| 阶段 | 执行方式 | 适用 Profile |
+|------|----------|--------------|
+| P0～P1 | HTTP Gateway | BATCH |
+| P2～P3 | Gateway + 轮询；CDC 建议 MQ Worker | BATCH + CDC |
+| P4+ | MQ + 多 Worker | 全部 |
+
+**MQ 消息体：** `{ "taskId", "agentId", "syncMode" }`；Worker `GET /internal/seatunnel-task/{id}/conf` 拉取配置。
+
+---
+
+### 附录 D：优先级 Top 15（资源排期）
+
+| 优先级 | Source | Sink | 阶段 | 模式 |
+|--------|--------|------|------|------|
+| 1 | Jdbc (MySQL) | Jdbc (MySQL) | P0→P1 | BATCH 跨数据源 |
+| 2 | Jdbc (MySQL) | Jdbc (PostgreSQL) | P1 | BATCH |
+| 3 | Jdbc (MySQL) | Doris/StarRocks | P2 | BATCH |
+| 4 | MySQL-CDC | Jdbc (MySQL/Doris) | P3 | STREAMING |
+| 5 | Jdbc (MySQL) | Kafka | P4 | BATCH |
+| 6 | MySQL-CDC | Kafka | P3+P4 | STREAMING |
+| 7 | Jdbc (PostgreSQL) | Jdbc (MySQL) | P1 | BATCH |
+| 8 | Jdbc (Oracle) | Jdbc (MySQL/PG) | P1 | BATCH |
+| 9 | Jdbc (MySQL) | Hive | P2 | BATCH |
+| 10 | Jdbc (MySQL) | Elasticsearch | P2 | BATCH |
+| 11 | Jdbc (MySQL) | ClickHouse | P2 | BATCH |
+| 12 | PostgreSQL-CDC | Jdbc (PG) | P3 | STREAMING |
+| 13 | Kafka | Jdbc (MySQL) | P4 | BATCH |
+| 14 | Jdbc (MySQL) | S3/LocalFile | P4 | BATCH |
+| 15 | Jdbc (SQL Server) | Jdbc (MySQL) | P1 | BATCH |
+
+---
+
+### 附录 E：测试金字塔总览
+
+```
+                    ┌─────────────┐
+                    │  E2E / 手工  │  每条 Profile 至少 1 个 NL 用例 + Gateway 真执行
+                    ├─────────────┤
+                    │  集成测试    │  Testcontainers / WireMock Gateway / 双 H2 数据源
+                    ├─────────────┤
+                    │  单元测试    │  Adapter / Router / Validator / Service（Mock LLM）
+                    └─────────────┘
+```
+
+| 层级 | 覆盖范围 | CI 要求 |
+|------|----------|---------|
+| 单元 | 所有 Adapter、Router、Validator、PostProcessor | 每次 PR 必跑 |
+| 集成 | save/execute 状态机、跨 datasource 落库 | 每次 PR 必跑 |
+| E2E | P0 全用例；P1+ 按阶段增量 | 发布前 /  nightly |
+| 执行侧 | Gateway 插件 + 真实 Connector | 预发环境手工 + 抽检 |
+
+**现有测试基线（可扩展）：**
+
+- `SeatunnelSyncServiceTest`、`SeatunnelConfigBuilderTest`、`SeatunnelConfValidatorTest`
+- `SeatunnelSyncComplexityRouterTest`、`SeatunnelTaskServiceTest`
+- `SeatunnelConfigGenerateNodeTest`、`IntentRecognitionDispatcherTest`
+
+---
+
 ## 主链路时序
 
 ```
@@ -383,3 +1060,5 @@ spring:
 **按「方案 A：新增《SeaTunnel同步任务》意图 → 新建 `SeatunnelConfigGenerateNode` → conf 落 MySQL → 页面审核 → 独立 SeaTunnel 服务执行」推进。** 现有 `SyncTaskNode` + `sql_check` SQL 审批链路**完整保留**；SeaTunnel 链路**复制其模式**新建，执行走 Gateway API。两条链路通过意图分类分流，互不影响。
 
 **建议起步：** 阶段 1 的 `intent-recognition.txt` 新分类 + `SeatunnelConfigBuilder`（模板）+ `SeatunnelSyncComplexityRouter` / `SeatunnelConfGenerateService`（LLM 分流）+ **新建** `SeatunnelConfigGenerateNode` + `seatunnel_task` 表——先验证《SeaTunnel同步任务》能正确生成 conf 并落库，同时确认《数据同步任务》仍走 `SyncTaskNode` 不受影响。
+
+**Connector 演进：** 按 [Connector 能力实现阶段（Source → Sink）](#connector-能力实现阶段source--sink) 分 **P0～P4** 推进；每个阶段均包含 **实现目标、实现方案思路、测试方案**（单元 / 集成 / E2E）。建议当前优先完成 **P0**（Schema 对齐 + 执行闭环 + 缺陷修复），再进入 **P1** JDBC 跨源。

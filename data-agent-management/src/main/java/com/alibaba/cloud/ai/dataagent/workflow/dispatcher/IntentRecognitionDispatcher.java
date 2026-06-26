@@ -27,7 +27,6 @@ import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_CLASSIFICA
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_CLASSIFICATION_SYNC_TASK;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_RECOGNITION_NODE_OUTPUT;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.SEATUNNEL_CONFIG_GENERATE_NODE;
-import static com.alibaba.cloud.ai.dataagent.constant.Constant.SYNC_TASK_NODE;
 import static com.alibaba.cloud.ai.graph.StateGraph.END;
 
 /**
@@ -39,8 +38,7 @@ public class IntentRecognitionDispatcher implements EdgeAction {
 	@Override
 	public String apply(OverAllState state) throws Exception {
 		// 获取意图识别结果
-		IntentRecognitionOutputDTO intentResult = StateUtil.getObjectValue(state, INTENT_RECOGNITION_NODE_OUTPUT,
-				IntentRecognitionOutputDTO.class);
+		IntentRecognitionOutputDTO intentResult = StateUtil.getObjectValue(state, INTENT_RECOGNITION_NODE_OUTPUT, IntentRecognitionOutputDTO.class);
 
 		if (intentResult == null || intentResult.getClassification() == null
 				|| intentResult.getClassification().trim().isEmpty()) {
@@ -59,8 +57,8 @@ public class IntentRecognitionDispatcher implements EdgeAction {
 			return SEATUNNEL_CONFIG_GENERATE_NODE;
 		}
 		if (INTENT_CLASSIFICATION_SYNC_TASK.equals(classification)) {
-			log.info("Intent classified as data sync task, proceeding to SyncTaskNode");
-			return SYNC_TASK_NODE;
+			log.info("Intent classified as data sync task, proceeding to EvidenceRecallNode");
+			return EVIDENCE_RECALL_NODE;
 		}
 
 		log.info("Intent classified as potential data analysis request, proceeding to evidence recall");

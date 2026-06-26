@@ -21,6 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
@@ -121,6 +123,25 @@ class TableSyncServiceTest {
 	}
 
 	@Test
+	void generateSyncSql_usesCanonicalQueryForRecall() throws Exception {
+		mockRecallAndResolve("order_items", "order_items_back", List.of());
+		mockMysqlAgent();
+
+		when(datasourceService.getDatasourceTables(1)).thenReturn(List.of("order_items"));
+		when(datasourceService.getTableColumnMetadata(1, "order_items")).thenReturn(List.of(col("id")));
+		when(syncSchemaBuilder.build(any())).thenReturn(new SchemaDTO());
+		when(syncSqlGenerateService.generate(any(SyncSqlGenerationDTO.class)))
+			.thenReturn("INSERT INTO `order_items_back` SELECT * FROM `order_items`;");
+
+		String rawInput = "把它同步到 order_items_back";
+		String canonical = "把 order_items 订单明细表同步到 order_items_back";
+		tableSyncService.generateSyncSql(1L, rawInput, "(无)", canonical, "业务知识");
+
+		verify(syncSchemaRecallService).recall(eq(1), eq(1L), eq(canonical));
+		verify(syncTableResolveService).resolve(eq(canonical), eq("(无)"), any(), eq("业务知识"));
+	}
+
+	@Test
 	void generateSyncSql_sourceNotExists_returnsError() throws Exception {
 		mockRecallAndResolve("order", "A", List.of());
 		mockMysqlAgent();
@@ -165,7 +186,7 @@ class TableSyncServiceTest {
 			.tableDocuments(List.of(tableDoc))
 			.schemaDTO(new SchemaDTO())
 			.build());
-		when(syncTableResolveService.resolve(anyString(), anyString(), any())).thenReturn(null);
+		when(syncTableResolveService.resolve(anyString(), anyString(), any(), any())).thenReturn(null);
 
 		SyncTaskResult result = tableSyncService.generateSyncSql(1L, "sync", "(无)");
 
@@ -202,7 +223,7 @@ class TableSyncServiceTest {
 		dto.setSourceTable(source);
 		dto.setTargetTable(target);
 		dto.setRelatedTables(related);
-		when(syncTableResolveService.resolve(anyString(), anyString(), any())).thenReturn(dto);
+		when(syncTableResolveService.resolve(anyString(), anyString(), any(), any())).thenReturn(dto);
 	}
 
 	private void mockMysqlAgent() {
