@@ -288,15 +288,15 @@ MCP Tool（可选）
 | **生成 ≠ 执行** | Agent 生成 conf 文本；Worker/Gateway 须安装对应 Connector JAR 才能真正跑作业 |
 | **与 SQL 链路分工** | 同库小表轻量同步仍走 `SyncTaskNode`；SeaTunnel 负责跨源、大批量、CDC、异构 |
 | **执行通道可演进** | 近期 HTTP Gateway；中期 **MQ + SeaTunnel Worker**；长期多 Worker 队列调度 |
-| **LLM 边界** | JDBC 复杂 query/transform 可用 LLM；CDC 核心参数、MQ 连接信息宜模板/配置注入 |
+| **LLM 边界** | JDBC 复杂 query 用 LLM；**列映射/行过滤**等走 P1 Transform 白名单；CDC/MQ 连接信息宜模板/配置注入 |
 | **凭证安全** | conf 落库可含真实连接信息；审核页脱敏展示；MQ 消息体不传全文 conf |
 
 ### 阶段代号与依赖关系
 
 | 代号 | 含义 | 前置依赖 |
 |------|------|----------|
-| **P0** | 当前 MVP 完善（MySQL 同库 Jdbc BATCH，**conf 生成 + 审核落库**） | 平台阶段 1 + 2（conf 生成、Schema 对齐、审核预览） |
-| **P1** | JDBC 跨源批同步 | P0 + 平台阶段 3（Gateway 执行闭环） |
+| **P0** ✅ | 当前 MVP 完善（MySQL 同库 Jdbc BATCH，**conf 生成 + 审核落库**） | 平台阶段 1 + 2（conf 生成、Schema 对齐、审核预览） |
+| **P1** | JDBC 跨源批同步 + **常用 Transform 白名单** | P0 + 平台阶段 3（Gateway 执行闭环） |
 | **P2** | 异构批同步 + 数仓/OLAP Sink | P1 |
 | **P3** | CDC / 增量 / 流式 | P1 + Gateway/Worker 长作业能力 |
 | **P4** | 消息队列 / 文件 / 扩展拓扑 | P1；部分组合依赖 P3 |
@@ -317,7 +317,8 @@ flowchart TB
   Profile -->|复杂| LLM[SeatunnelConfGenerateService]
   Template --> Merge[Conf 合并]
   LLM --> Merge
-  Merge --> Post[SeatunnelConfPostProcessor<br/>SOURCE/SINK 凭证注入]
+  Merge --> TransformValid[SeatunnelTransformRegistry<br/>Transform 白名单校验]
+  TransformValid --> Post[SeatunnelConfPostProcessor<br/>SOURCE/SINK 凭证注入]
   Post --> Valid[SeatunnelConfValidator<br/>白名单校验]
   Valid --> Save[SeatunnelTaskService.save]
   Save --> DB[(seatunnel_task)]
@@ -331,15 +332,16 @@ flowchart TB
 | `SyncDatasourceResolveService` | NL → sourceDsId / sinkDsId | **新建**（P1） |
 | `SeatunnelSyncProfileRouter` | 演进自 `SeatunnelSyncComplexityRouter` | **改造** |
 | `SeatunnelConfPostProcessor` | 双端占位符注入 | **改造**（P1） |
-| `SeatunnelConfValidator` | 黑名单 → 白名单 + Profile 规则 | **改造** |
+| `SeatunnelConfValidator` | 黑名单 → 白名单 + Profile 规则 + Transform 校验 | **改造** |
+| `SeatunnelTransformRegistry` | 注册允许的 Transform 插件及 NL 触发关键词 | **新建**（P1） |
 | `CdcConfBuilder` | MySQL-CDC / PG-CDC 模板 | **新建**（P3） |
 | `ConnectorProfile` 实体 | Kafka topic、S3 bucket 等非 JDBC 配置 | **新建**（P4） |
 
 ---
 
-### P0｜当前 MVP 完善（MySQL 同库 Jdbc BATCH）
+### P0｜当前 MVP 完善（MySQL 同库 Jdbc BATCH）✅ 已完成
 
-> **当前项目重点：** 自然语言 → 合法 HOCON conf 生成与审核落库。**执行闭环**（独立 SeaTunnel Gateway、状态轮询、exec 日志）依赖平台 [阶段 3](#阶段-3独立-seatunnel-gateway--执行闭环57-天)，**暂不纳入 P0 范围**。
+> **P0 验收范围（已完成）：** 自然语言 → 合法 HOCON conf 生成与审核落库。**执行闭环**（独立 SeaTunnel Gateway、状态轮询、exec 日志）依赖平台 [阶段 3](#阶段-3独立-seatunnel-gateway--执行闭环57-天)，**不在 P0 交付范围**。
 
 #### 1. 实现目标
 
@@ -458,8 +460,9 @@ SeatunnelSyncService.generateConf()
 **业务目标**
 
 - 支持 Agent 绑定的**两个不同 JDBC 数据源**之间批同步，例如：「把 A 数据源 orders 同步到 B 数据源 orders_backup」。
-- 支持 MySQL ↔ PostgreSQL 等异构 JDBC 组合（P1 先打通 conf 生成与双端凭证注入；复杂类型映射可留 P2）。
+- 支持 MySQL ↔ PostgreSQL 等异构 JDBC 组合（P1 先打通 conf 生成与双端凭证注入；**跨 dialect 类型映射增强**留 P2）。
 - 用户无需手写 JDBC URL；连接信息从 `Datasource` + `DatasourceTypeHandler` 自动映射。
+- 支持 **常用 Transform 白名单**（见 [2.6](#26-transform-白名单与-sql-分工p1)）：NL 描述列映射、行过滤、常量列、字符串清洗等时，conf 可含合法 `transform` 块（同库与跨源均适用）。
 
 **技术目标**
 
@@ -470,6 +473,8 @@ SeatunnelSyncService.generateConf()
 | conf 结构 | source/sink 使用不同 url/user/password |
 | Schema 召回 | 源表在 sourceDs 校验，目标表在 sinkDs 校验 |
 | 白名单 | Registry 仅允许已实现的 JDBC 组合 |
+| **Transform 白名单** | conf 可含 P1 允许的 transform 插件；Validator 校验插件名与 Schema 列引用 |
+| **SQL vs Transform 分工** | JOIN/聚合/多表关联 → `source.Jdbc.query`；列映射/简单行过滤/常量列 → `transform` 块 |
 
 **Source → Sink 矩阵**
 
@@ -483,6 +488,7 @@ SeatunnelSyncService.generateConf()
 | 1.6 | Jdbc (SQL Server) | Jdbc (MySQL/PG) | BATCH | ⚠️ | connector-jdbc |
 | 1.7 | Jdbc (Dameng) | Jdbc (MySQL/PG) | BATCH | ⚠️ | connector-jdbc |
 | 1.8 | Jdbc (Hive/HiveJdbc) | Jdbc (MySQL/PG) | BATCH | ⚠️ | jdbc + hive |
+| 1.9 | Jdbc (任意) | Jdbc (任意) | BATCH | ✅ + transform | connector-jdbc |
 
 #### 2. 实现方案思路
 
@@ -518,9 +524,10 @@ interface SeatunnelConnectorAdapter {
 SeatunnelSyncService
   ├─ resolveDatasources(agentId, userInput) → sourceDs, sinkDs
   ├─ recall + resolve 表名（sourceDs 上查源表，sinkDs 上查目标表）
-  ├─ profileRouter → JDBC_BATCH_SIMPLE | JDBC_BATCH_CROSS
+  ├─ profileRouter → JDBC_BATCH_SIMPLE | JDBC_BATCH_CROSS | JDBC_BATCH_WITH_TRANSFORM
   ├─ 简单：SeatunnelConfigBuilder.build(sourceDs, sinkDs, sourceTable, targetTable)
-  ├─ 复杂：LLM 只生成 query/transform；Adapter 注入 source/sink 块
+  ├─ 复杂：LLM 生成 query/transform（Transform 限 P1 白名单）；Adapter 注入 source/sink 块
+  ├─ SeatunnelTransformRegistry.validate(transformBlocks, schema)
   └─ postProcessor.inject(sourceDbConfig, sinkDbConfig)
 ```
 
@@ -541,9 +548,98 @@ Prompt 改为双端占位符；Validator 校验 source/sink 块均存在。
 spring.ai.alibaba.data-agent.seatunnel:
   enabled-connectors: jdbc  # P1 仅 jdbc
   cross-datasource-enabled: true
+  # P1 Transform 白名单（与 SeatunnelTransformRegistry 对齐；未列出则 LLM 不得生成）
+  enabled-transforms: Sql,FieldMapper,Filter,Copy,Replace,Split
   gateway:
     installed-plugins: jdbc  # 与 Gateway 对齐，生成时校验
 ```
+
+**2.6 Transform 白名单与 SQL 分工（P1）**
+
+> **范围说明：** 不覆盖 [SeaTunnel 全部 Transforms](https://seatunnel.apache.org/zh-CN/docs/2.3.13/transforms)；P1 仅开放 **JDBC 批同步高频、NL 可描述、可校验** 的 6 个插件。P0 已支持的「JOIN/复杂 WHERE 写在 `source.Jdbc.query`」**保持不变**。
+
+**设计原则**
+
+| 原则 | 说明 |
+|------|------|
+| **白名单制** | 与 Connector 相同；Prompt + Validator 只认 Registry 内 transform 名 |
+| **SQL 优先** | 多表 JOIN、GROUP BY、复杂 WHERE → 继续 `source.Jdbc.query`（P0 路径） |
+| **Transform 补位** | 列级操作、全表拉取后的管道过滤、跨 dialect 不便写 SQL 时 → `transform` 块 |
+| **可审核** | 审核页高亮 `transform { ... }`，DBA 可手改 LLM 输出 |
+
+**P1 Transform 白名单**
+
+| 优先级 | 插件 | 典型 NL | 说明 |
+|--------|------|---------|------|
+| P1-A | **FieldMapper** | 「只同步 id、name」「把 user_id 映射成 customer_id」「不同步 password」 | 列选/重命名/排除；跨源字段对齐的基础 |
+| P1-A | **Filter** | 「排除 status=0」「只要最近 30 天」 | 简单行过滤；模板路径（`SELECT *`）比改 query 更自然 |
+| P1-A | **Sql** | 「管道里再做一层 SQL」「全表读出后再投影」 | 与 source query 分工：source 简单读，transform.Sql 二次处理 |
+| P1-B | **Copy** | 「加上 _sync_time 为当前时间」「新增常量列 version=1」 | 常量/默认列 |
+| P1-B | **Replace** | 「phone 去掉横线」「name 空格替换成空」 | 轻量字符串清洗 |
+| P1-B | **Split** | 「tags 按逗号拆成 tag1、tag2」 | 分隔符拆列 |
+
+**P1 暂不纳入（留 P2+ / 按需）**
+
+| 插件 | 原因 |
+|------|------|
+| Embedding / LLM / DynamicCompile | 与 Agent 层职责重叠或难以验收 |
+| JsonPath | 待 JSON 列场景明确后再开（P2+） |
+| DataValidator | 规则复杂，NL 生成不稳定（P2+） |
+| FilterRowKind / TableMerge / TableRename | 偏 CDC/多表流式（P3） |
+
+**SQL vs Transform 路由（`SeatunnelSyncProfileRouter` 演进）**
+
+```
+用户输入
+  ├─ 含 JOIN / 关联表 / 聚合 / GROUP → LLM，复杂 SQL 写入 source.Jdbc.query（P0 逻辑）
+  ├─ 含「映射/字段/只同步/排除列」→ LLM + FieldMapper（或 Filter + 简单 source query）
+  ├─ 含「排除/过滤/只要」且无 JOIN → Filter 或 SQL WHERE（Profile 内固定一种，避免混用）
+  └─ 全表 + 无 transform 语义 → 模板 SELECT *（P0 逻辑）
+```
+
+**2.6.1 新建 `SeatunnelTransformRegistry`**
+
+```java
+// 概念接口
+interface SeatunnelTransformDescriptor {
+  String pluginName();           // 如 "FieldMapper"
+  Set<String> nlTriggerKeywords(); // 如 "映射", "字段", "只同步"
+  boolean validateBlock(String hoconBlock, SchemaContext ctx);
+}
+```
+
+- 启动时注册 P1 六个插件；`SeatunnelConfValidator` 校验 conf 内 transform 插件名均在白名单。
+- FieldMapper / Filter：映射列、条件字段必须在 source Schema 中存在（程序化校验，不依赖 LLM）。
+
+**2.6.2 Prompt 改造**
+
+- 扩展 `seatunnel-conf-generate.txt`（或按 Profile 注入片段 `seatunnel-transform-hints.txt`）：
+  - 只列举 P1 白名单及 HOCON 示例（每个插件 1 个最小示例）。
+  - 明确：**禁止**白名单外 transform；JOIN/聚合**不得**拆进 transform 链 unless 使用 transform.Sql。
+- `SeatunnelConfGenerateService` 传入 `enabledTransforms`（来自 `SeatunnelProperties`）。
+
+**2.6.3 Validator 扩展**
+
+- 检测到 `transform { ... }` 时：
+  - 插件名 ∈ `enabled-transforms`；
+  - FieldMapper 引用列 ∈ 召回 Schema；
+  - Filter 条件字段 ∈ Schema（弱校验：字段名存在即可）；
+  - 仍须满足 env/source/sink 块完整（P0 规则保留）。
+
+**2.6.4 前端**
+
+- `SeatunnelTask.vue` conf 预览：**语法高亮 `transform` 块**（可与 sink 块区分背景色），便于 DBA 审核。
+
+**2.6.5 涉及类（Transform 改动清单）**
+
+| 类 / 文件 | 动作 |
+|-----------|------|
+| `SeatunnelTransformRegistry` | **新建** |
+| `SeatunnelProperties` | 增加 `enabled-transforms` |
+| `seatunnel-conf-generate.txt` | 增加 P1 transform 示例与分工说明 |
+| `SeatunnelConfValidator` | transform 白名单 + 列引用校验 |
+| `SeatunnelSyncComplexityRouter` / `SeatunnelSyncProfileRouter` | 列映射/过滤语义 → 选用 transform 或 SQL |
+| `SeatunnelTask.vue` | transform 块高亮 |
 
 #### 3. 测试方案
 
@@ -556,7 +652,11 @@ spring.ai.alibaba.data-agent.seatunnel:
 | `PostgreSqlJdbcConnectorAdapterTest` | PG driver 为 `org.postgresql.Driver` |
 | `SeatunnelConnectorRegistryTest` | 未注册组合拒绝；MySQL→PG 允许 |
 | `SeatunnelConfPostProcessorTest` | 双端占位符均替换 |
-| `SeatunnelSyncServiceTest` | sourceDsId ≠ sinkDsId；非 MySQL  dialect 不再整体拒绝（按 Registry） |
+| `SeatunnelSyncServiceTest` | sourceDsId ≠ sinkDsId；非 MySQL dialect 不再整体拒绝（按 Registry） |
+| `SeatunnelTransformRegistryTest` | 白名单注册；未注册插件名拒绝 |
+| `SeatunnelConfValidatorTest`（transform） | FieldMapper 引用不存在列报错；白名单外 `JsonPath` 拒绝 |
+| `SeatunnelConfGenerateServiceTest`（transform） | Mock LLM 含 FieldMapper/Filter → validate 通过 |
+| `SeatunnelSyncProfileRouterTest` | 「只同步 id,name」→ 含 FieldMapper；「JOIN 两表」→ 仅 source query |
 
 **3.2 集成测试**
 
@@ -564,6 +664,7 @@ spring.ai.alibaba.data-agent.seatunnel:
 |------|------|------|
 | 跨库 conf 落库 | H2 两个 datasource 或 Testcontainers MySQL×2 | `seatunnel_task` 双 ID 正确 |
 | Gateway 提交 | WireMock | conf 中 source/sink url 不同 |
+| 含 transform conf 落库 | Mock LLM | `job_config` 含合法 `transform { FieldMapper ... }` |
 
 **3.3 端到端验收**
 
@@ -572,6 +673,10 @@ spring.ai.alibaba.data-agent.seatunnel:
 | E2E-1.1 | Agent 绑定 dsA(MySQL)、dsB(MySQL)，「把 dsA 的 orders 同步到 dsB 的 orders_backup」 | 双 url；执行后 B 库有数据 |
 | E2E-1.2 | MySQL → PostgreSQL | conf 中 driver 分别为 mysql / postgres |
 | E2E-1.3 | 仅绑定一个数据源却要求跨库 | 明确错误提示 |
+| E2E-1.4 | 「把 orders 的 id、amount 同步到 orders_backup」（同库或跨库） | conf 含 `transform { FieldMapper ... }`；sink 列与映射一致 |
+| E2E-1.5 | 「全表同步 orders，排除 status=0」（无 JOIN） | conf 含 `Filter` 或 source query 含 WHERE（与 Profile 约定一致） |
+| E2E-1.6 | 「同步 orders 并加上 _sync_time 当前时间」 | conf 含 `transform { Copy ... }` |
+| E2E-1.7 | LLM 输出含 `JsonPath` | Validator 拒绝并提示不在 P1 白名单 |
 
 **3.4 执行侧验证**
 
@@ -587,7 +692,7 @@ spring.ai.alibaba.data-agent.seatunnel:
 **业务目标**
 
 - 业务库（MySQL）→ 数仓/OLAP（Doris、StarRocks、ClickHouse、Hive、Elasticsearch）的全量批同步。
-- 支持字段映射、类型转换（如 MySQL `DATETIME` → ClickHouse `DateTime`）。
+- 支持字段映射、类型转换（如 MySQL `DATETIME` → ClickHouse `DateTime`）；**复用 P1 Transform 白名单**，P2 增强异构 Sink Adapter 与 `ColumnTypeMappingService`。
 - 复杂场景仍支持 NL 描述过滤/JOIN，但 sink 侧 Connector 块由 Adapter 固定生成。
 
 **技术目标**
@@ -595,7 +700,7 @@ spring.ai.alibaba.data-agent.seatunnel:
 | 目标项 | 完成标准 |
 |--------|----------|
 | 专用 Sink Adapter | Doris/StarRocks/ClickHouse/Hive/ES 各有 Adapter |
-| Transform | conf 可含 `transform { Sql / FieldMapper }` |
+| Transform | **复用 P1** 白名单；异构场景 FieldMapper 含类型映射建议 |
 | SyncProfile | 新增 `JDBC_BATCH_HETEROGENEOUS` |
 | Gateway 插件对齐 | `installed-plugins` 含 doris、starrocks 等 |
 
@@ -608,7 +713,7 @@ spring.ai.alibaba.data-agent.seatunnel:
 | 2.3 | Jdbc (MySQL/PG) | ClickHouse | BATCH | ⚠️ | jdbc + clickhouse |
 | 2.4 | Jdbc (MySQL) | Hive | BATCH | ⚠️ | jdbc + hive |
 | 2.5 | Jdbc (MySQL) | Elasticsearch | BATCH | ⚠️ | jdbc + elasticsearch |
-| 2.6 | Jdbc (任意) | Jdbc (任意) | BATCH | ✅ + transform | 视 sink 而定 |
+| 2.6 | Jdbc (任意) | Jdbc (任意) | BATCH | ✅ + transform | 视 sink 而定（**P1 已支持**） |
 
 #### 2. 实现方案思路
 
@@ -621,13 +726,13 @@ spring.ai.alibaba.data-agent.seatunnel:
 
 - `SeatunnelSyncProfileRouter`（演进自 ComplexityRouter）：
   - 源汇 dialect 相同 + 无 transform 语义 → `JDBC_BATCH_CROSS`（P1）
-  - dialect 不同或用户提及「映射/转换/字段」→ `JDBC_BATCH_HETEROGENEOUS`
-- 异构 Prompt 独立文件 `seatunnel-conf-generate-heterogeneous.txt`：LLM 只输出 query + transform，**禁止**写 sink connector 名。
+  - dialect 不同或 sink 为 Doris/StarRocks 等 → `JDBC_BATCH_HETEROGENEOUS`
+- 异构 Prompt 独立文件 `seatunnel-conf-generate-heterogeneous.txt`：LLM 输出 query + **P1 transform**；**禁止**写 sink connector 名。
 
-**2.3 类型映射（可选增强）**
+**2.3 类型映射（P2 增强，基于 P1 FieldMapper）**
 
-- `ColumnTypeMappingService`：根据 source/sink 列 metadata 生成默认 FieldMapper 建议。
-- 审核页高亮 transform 块，便于 DBA 人工修正。
+- `ColumnTypeMappingService`：根据 source/sink 列 metadata 生成默认 FieldMapper 类型转换建议（如 `DATETIME` → `DateTime`）。
+- 审核页 transform 块高亮（P1 已做）+ 异构 sink 列类型对照提示。
 
 **2.4 Validator 白名单化**
 
@@ -643,7 +748,7 @@ spring.ai.alibaba.data-agent.seatunnel:
 | `DorisSinkAdapterTest` | sink 块含 fenodes / database / table |
 | `SeatunnelSyncProfileRouterTest` | MySQL→Doris 命中 HETEROGENEOUS |
 | `SeatunnelConfValidatorTest` | MySQL→Doris conf 通过；含 FakeSource 拒绝 |
-| `SeatunnelConfGenerateServiceTest`（异构 Prompt） | Mock LLM 含 transform → validate 通过 |
+| `SeatunnelConfGenerateServiceTest`（异构 Prompt） | Mock LLM 含 P1 FieldMapper → validate 通过 |
 
 **3.2 集成 / E2E**
 
@@ -1068,6 +1173,6 @@ spring:
 
 **按「方案 A：新增《SeaTunnel同步任务》意图 → 新建 `SeatunnelConfigGenerateNode` → conf 落 MySQL → 页面审核预览」推进。** 现有 `SyncTaskNode` + `sql_check` SQL 审批链路**完整保留**；SeaTunnel 链路**复制其模式**新建。**当前 MVP 验收 conf 生成正确性**；真执行作业见 [阶段 3](#阶段-3独立-seatunnel-gateway--执行闭环57-天-非当前-mvp)（独立 Gateway）。两条链路通过意图分类分流，互不影响。
 
-**建议起步：** 阶段 1 的 `intent-recognition.txt` 新分类 + `SeatunnelConfigBuilder`（模板）+ `SeatunnelSyncComplexityRouter` / `SeatunnelConfGenerateService`（LLM 分流）+ **新建** `SeatunnelConfigGenerateNode` + `seatunnel_task` 表——先验证《SeaTunnel同步任务》能正确生成 conf 并落库，同时确认《数据同步任务》仍走 `SyncTaskNode` 不受影响。
+**P1 起步建议：** `SyncDatasourceResolveService`（NL 解析 sourceDsId / sinkDsId）+ `SeatunnelConnectorAdapter`（双端 JDBC 凭证注入）+ `SeatunnelTransformRegistry`（**Sql / FieldMapper / Filter / Copy / Replace / Split** 白名单）+ `SeatunnelConfPostProcessor` / Validator / Prompt 改造；可选并行推进平台 [阶段 3](#阶段-3独立-seatunnel-gateway--执行闭环57-天) Gateway 执行闭环。
 
-**Connector 演进：** 按 [Connector 能力实现阶段（Source → Sink）](#connector-能力实现阶段source--sink) 分 **P0～P4** 推进。**P0 已完成**（conf 生成 + Schema 对齐 + 审核落库）；**执行闭环**归入平台阶段 3，部署独立 Gateway 后再做。下一步可进入 **P1** JDBC 跨源 conf 生成。
+**Connector 演进：** 按 [Connector 能力实现阶段（Source → Sink）](#connector-能力实现阶段source--sink) 分 **P0～P4** 推进。**P0 已完成**（conf 生成 + Schema 对齐 + 审核落库）；**执行闭环**归入平台阶段 3。下一步 **P1** = JDBC 跨源 conf 生成 + **常用 Transform 白名单**。
