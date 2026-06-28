@@ -56,12 +56,12 @@ class IntentRecognitionDispatcherTest {
 	}
 
 	@Test
-	void apply_seatunnelSyncIntent_routesToSeatunnelConfigGenerateNode() throws Exception {
+	void apply_seatunnelSyncIntent_routesToEvidenceRecallNode() throws Exception {
 		OverAllState state = new OverAllState();
 		IntentRecognitionOutputDTO dto = TestFixtures.createIntentDTO(INTENT_CLASSIFICATION_SEATUNNEL_SYNC_TASK);
 		state.updateState(Map.of(INTENT_RECOGNITION_NODE_OUTPUT, dto));
 
-		assertEquals(SEATUNNEL_CONFIG_GENERATE_NODE, dispatcher.apply(state));
+		assertEquals(EVIDENCE_RECALL_NODE, dispatcher.apply(state));
 	}
 
 	@Test

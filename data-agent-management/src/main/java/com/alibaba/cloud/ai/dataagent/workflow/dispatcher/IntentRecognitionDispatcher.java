@@ -26,7 +26,6 @@ import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_CLASSIFICA
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_CLASSIFICATION_SEATUNNEL_SYNC_TASK;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_CLASSIFICATION_SYNC_TASK;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_RECOGNITION_NODE_OUTPUT;
-import static com.alibaba.cloud.ai.dataagent.constant.Constant.SEATUNNEL_CONFIG_GENERATE_NODE;
 import static com.alibaba.cloud.ai.graph.StateGraph.END;
 
 /**
@@ -53,8 +52,8 @@ public class IntentRecognitionDispatcher implements EdgeAction {
 			return END;
 		}
 		if (INTENT_CLASSIFICATION_SEATUNNEL_SYNC_TASK.equals(classification)) {
-			log.info("Intent classified as SeaTunnel sync task, proceeding to SeatunnelConfigGenerateNode");
-			return SEATUNNEL_CONFIG_GENERATE_NODE;
+			log.info("Intent classified as SeaTunnel sync task, proceeding to EvidenceRecallNode");
+			return EVIDENCE_RECALL_NODE;
 		}
 		if (INTENT_CLASSIFICATION_SYNC_TASK.equals(classification)) {
 			log.info("Intent classified as data sync task, proceeding to EvidenceRecallNode");

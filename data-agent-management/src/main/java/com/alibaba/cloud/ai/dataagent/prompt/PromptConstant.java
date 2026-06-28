@@ -44,6 +44,11 @@ public class PromptConstant {
 		return new PromptTemplate(PromptLoader.loadPrompt("sync-sql-generate"));
 	}
 
+	// seatunnel-table-resolve
+	public static PromptTemplate getSeatunnelTableResolvePromptTemplate() {
+		return new PromptTemplate(PromptLoader.loadPrompt("seatunnel-table-resolve"));
+	}
+
 	// seatunnel-conf-generate
 	public static PromptTemplate getSeatunnelConfGeneratePromptTemplate() {
 		return new PromptTemplate(PromptLoader.loadPrompt("seatunnel-conf-generate"));

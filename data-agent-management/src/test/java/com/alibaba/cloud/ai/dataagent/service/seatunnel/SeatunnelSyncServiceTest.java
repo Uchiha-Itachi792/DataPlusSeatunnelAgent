@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -33,33 +34,24 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
+import org.springframework.ai.document.Document;
+
 import com.alibaba.cloud.ai.dataagent.bo.DbConfigBO;
 import com.alibaba.cloud.ai.dataagent.bo.schema.ColumnInfoBO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SeatunnelConfGenerationDTO;
-import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncIntentParseDTO;
+import com.alibaba.cloud.ai.dataagent.dto.prompt.SeatunnelTableResolveDTO;
 import com.alibaba.cloud.ai.dataagent.dto.schema.SchemaDTO;
+import com.alibaba.cloud.ai.dataagent.dto.seatunnel.SeatunnelSchemaRecallResult;
 import com.alibaba.cloud.ai.dataagent.dto.seatunnel.SeatunnelTaskResult;
 import com.alibaba.cloud.ai.dataagent.entity.AgentDatasource;
 import com.alibaba.cloud.ai.dataagent.entity.Datasource;
 import com.alibaba.cloud.ai.dataagent.service.datasource.AgentDatasourceService;
 import com.alibaba.cloud.ai.dataagent.service.datasource.DatasourceService;
-import com.alibaba.cloud.ai.dataagent.service.llm.LlmService;
-import com.alibaba.cloud.ai.dataagent.service.sync.SyncRelatedTableExpander;
 import com.alibaba.cloud.ai.dataagent.service.sync.SyncSchemaBuilder;
-import com.alibaba.cloud.ai.dataagent.util.ChatResponseUtil;
-import com.alibaba.cloud.ai.dataagent.util.JsonParseUtil;
-
-import reactor.core.publisher.Flux;
 
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
 class SeatunnelSyncServiceTest {
-
-	@Mock
-	private LlmService llmService;
-
-	@Mock
-	private JsonParseUtil jsonParseUtil;
 
 	@Mock
 	private AgentDatasourceService agentDatasourceService;
@@ -68,13 +60,19 @@ class SeatunnelSyncServiceTest {
 	private DatasourceService datasourceService;
 
 	@Mock
+	private SeatunnelSchemaRecallService seatunnelSchemaRecallService;
+
+	@Mock
+	private SeatunnelTableResolveService seatunnelTableResolveService;
+
+	@Mock
+	private SeatunnelRelatedTableExpander seatunnelRelatedTableExpander;
+
+	@Mock
 	private SeatunnelConfigBuilder seatunnelConfigBuilder;
 
 	@Mock
 	private SyncSchemaBuilder syncSchemaBuilder;
-
-	@Mock
-	private SyncRelatedTableExpander syncRelatedTableExpander;
 
 	@Mock
 	private SeatunnelConfGenerateService seatunnelConfGenerateService;
@@ -89,17 +87,17 @@ class SeatunnelSyncServiceTest {
 	@BeforeEach
 	void setUp() {
 		complexityRouter = new SeatunnelSyncComplexityRouter();
-		seatunnelSyncService = new SeatunnelSyncService(llmService, jsonParseUtil, agentDatasourceService,
-				datasourceService, seatunnelConfigBuilder, syncSchemaBuilder, syncRelatedTableExpander,
-				complexityRouter, seatunnelConfGenerateService, seatunnelConfPostProcessor);
-		when(syncRelatedTableExpander.expand(any(), any(), any(), any())).thenAnswer(inv -> inv.getArgument(3));
+		seatunnelSyncService = new SeatunnelSyncService(agentDatasourceService, datasourceService,
+				seatunnelSchemaRecallService, seatunnelTableResolveService, seatunnelRelatedTableExpander,
+				seatunnelConfigBuilder, syncSchemaBuilder, complexityRouter, seatunnelConfGenerateService,
+				seatunnelConfPostProcessor);
+		when(seatunnelRelatedTableExpander.expand(any(), any(), any(), any())).thenAnswer(inv -> inv.getArgument(3));
 	}
 
 	@Test
 	void generateConf_simpleSync_usesTemplate() throws Exception {
-		mockParse("order", "order_backup", List.of());
 		mockMysqlAgent();
-
+		mockRecallAndResolve("order", "order_backup", List.of());
 		when(datasourceService.getDatasourceTables(1)).thenReturn(List.of("order", "order_backup"));
 		List<ColumnInfoBO> columns = List.of(col("id"));
 		when(datasourceService.getTableColumnMetadata(1, "order")).thenReturn(columns);
@@ -116,9 +114,8 @@ class SeatunnelSyncServiceTest {
 
 	@Test
 	void generateConf_complexSync_usesLlm() throws Exception {
-		mockParse("order", "order_backup", List.of());
 		mockMysqlAgent();
-
+		mockRecallAndResolve("order", "order_backup", List.of());
 		when(datasourceService.getDatasourceTables(1)).thenReturn(List.of("order", "order_backup"));
 		List<ColumnInfoBO> columns = List.of(col("id"));
 		when(datasourceService.getTableColumnMetadata(1, "order")).thenReturn(columns);
@@ -138,27 +135,21 @@ class SeatunnelSyncServiceTest {
 	}
 
 	@Test
-	void generateConf_targetTableNotExists_usesLlm() throws Exception {
-		mockParse("order", "order_new", List.of());
+	void generateConf_emptyRecall_returnsError() {
 		mockMysqlAgent();
+		when(seatunnelSchemaRecallService.recall(eq(1), eq(1L), anyString()))
+			.thenReturn(SeatunnelSchemaRecallResult.builder().build());
 
-		when(datasourceService.getDatasourceTables(1)).thenReturn(List.of("order"));
-		when(datasourceService.getTableColumnMetadata(1, "order")).thenReturn(List.of(col("id")));
-		when(syncSchemaBuilder.build(any())).thenReturn(new SchemaDTO());
-		when(seatunnelConfGenerateService.generate(any(SeatunnelConfGenerationDTO.class)))
-			.thenReturn("env {} source {} sink {}");
-		when(seatunnelConfPostProcessor.injectCredentials(anyString(), any())).thenReturn("env {} source {} sink {}");
+		SeatunnelTaskResult result = seatunnelSyncService.generateConf(1L, "sync order to backup", "(无)");
 
-		SeatunnelTaskResult result = seatunnelSyncService.generateConf(1L, "把 order 同步到 order_new", "(无)");
-
-		assertEquals(SeatunnelTaskResult.Type.OK, result.getType());
-		assertEquals(SeatunnelTaskResult.GenerationMode.LLM, result.getGenerationMode());
+		assertEquals(SeatunnelTaskResult.Type.ERROR, result.getType());
+		assertTrue(result.getMessage().contains("未检索到相关数据表"));
 	}
 
 	@Test
 	void generateConf_sourceNotExists_returnsError() throws Exception {
-		mockParse("order", "order_backup", List.of());
 		mockMysqlAgent();
+		mockRecallAndResolve("order", "order_backup", List.of());
 		when(datasourceService.getDatasourceTables(1)).thenReturn(List.of("order_backup"));
 
 		SeatunnelTaskResult result = seatunnelSyncService.generateConf(1L, "sync order to order_backup", "(无)");
@@ -167,15 +158,21 @@ class SeatunnelSyncServiceTest {
 		assertTrue(result.getMessage().contains("源表 order 不存在"));
 	}
 
-	private void mockParse(String source, String target, List<String> related) {
-		when(llmService.callUser(anyString()))
-			.thenReturn(Flux.just(ChatResponseUtil.createResponse("parsed")));
-		when(llmService.blockToString(any())).thenReturn("parsed-json");
-		SyncIntentParseDTO dto = new SyncIntentParseDTO();
-		dto.setSourceTable(source);
-		dto.setTargetTable(target);
-		dto.setRelatedTables(related);
-		when(jsonParseUtil.tryConvertToObject(anyString(), any(Class.class))).thenReturn(dto);
+	private void mockRecallAndResolve(String source, String target, List<String> related) {
+		SchemaDTO schemaDTO = new SchemaDTO();
+		Document tableDoc = new Document("table", java.util.Map.of("name", source));
+		when(seatunnelSchemaRecallService.recall(eq(1), eq(1L), anyString()))
+			.thenReturn(SeatunnelSchemaRecallResult.builder()
+				.schemaDTO(schemaDTO)
+				.tableDocuments(List.of(tableDoc))
+				.recalledTableNames(List.of(source))
+				.build());
+		SeatunnelTableResolveDTO resolved = new SeatunnelTableResolveDTO();
+		resolved.setSourceTable(source);
+		resolved.setTargetTable(target);
+		resolved.setRelatedTables(related);
+		when(seatunnelTableResolveService.resolve(anyString(), anyString(), eq(schemaDTO), any()))
+			.thenReturn(resolved);
 	}
 
 	private void mockMysqlAgent() {

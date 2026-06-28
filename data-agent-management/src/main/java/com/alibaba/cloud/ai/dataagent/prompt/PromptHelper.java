@@ -21,6 +21,7 @@ import com.alibaba.cloud.ai.dataagent.dto.prompt.IntentRecognitionOutputDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncIntentParseDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncTableResolveDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SeatunnelConfGenerationDTO;
+import com.alibaba.cloud.ai.dataagent.dto.prompt.SeatunnelTableResolveDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncSqlGenerationDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.QueryEnhanceOutputDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SemanticConsistencyDTO;
@@ -271,6 +272,22 @@ public class PromptHelper {
 		BeanOutputConverter<SyncTableResolveDTO> beanOutputConverter = new BeanOutputConverter<>(SyncTableResolveDTO.class);
 		params.put("format", beanOutputConverter.getFormat());
 		return PromptConstant.getSyncTableResolvePromptTemplate().render(params);
+	}
+
+	/**
+	 * 构建 SeaTunnel 同步表名消歧提示词（业务语义名 → 物理表名）。
+	 */
+	public static String buildSeatunnelTableResolvePrompt(String multiTurn, String latestQuery, SchemaDTO schemaDTO,
+			String evidence) {
+		Map<String, Object> params = new HashMap<>();
+		params.put("multi_turn", multiTurn != null ? multiTurn : "(无)");
+		params.put("latest_query", latestQuery);
+		params.put("evidence", StringUtils.isNotBlank(evidence) ? evidence : "无");
+		params.put("schema_info", buildMixMacSqlDbPrompt(schemaDTO, true));
+		BeanOutputConverter<SeatunnelTableResolveDTO> beanOutputConverter = new BeanOutputConverter<>(
+				SeatunnelTableResolveDTO.class);
+		params.put("format", beanOutputConverter.getFormat());
+		return PromptConstant.getSeatunnelTableResolvePromptTemplate().render(params);
 	}
 
 	/**

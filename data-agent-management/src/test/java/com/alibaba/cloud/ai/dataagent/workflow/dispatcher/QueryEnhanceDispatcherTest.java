@@ -51,6 +51,16 @@ class QueryEnhanceDispatcherTest {
 	}
 
 	@Test
+	void apply_validSeatunnelQuery_routesToSeatunnelConfigGenerateNode() throws Exception {
+		OverAllState state = new OverAllState();
+		QueryEnhanceOutputDTO dto = TestFixtures.createQueryEnhanceDTO("用 SeaTunnel 把 order_items 同步到 order_items_back");
+		IntentRecognitionOutputDTO intent = TestFixtures.createIntentDTO(INTENT_CLASSIFICATION_SEATUNNEL_SYNC_TASK);
+		state.updateState(Map.of(QUERY_ENHANCE_NODE_OUTPUT, dto, INTENT_RECOGNITION_NODE_OUTPUT, intent));
+
+		assertEquals(SEATUNNEL_CONFIG_GENERATE_NODE, dispatcher.apply(state));
+	}
+
+	@Test
 	void apply_validSyncQuery_routesToSyncTaskNode() throws Exception {
 		OverAllState state = new OverAllState();
 		QueryEnhanceOutputDTO dto = TestFixtures.createQueryEnhanceDTO("把 order_items 同步到 order_items_back");

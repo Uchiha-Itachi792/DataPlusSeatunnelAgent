@@ -230,7 +230,9 @@ SeatunnelTask.vue          # 参考 SqlApproval.vue：conf 语法高亮、状态
 
 ---
 
-### 阶段 3：独立 SeaTunnel Gateway + 执行闭环（5～7 天）
+### 阶段 3：独立 SeaTunnel Gateway + 执行闭环（5～7 天，⏸️ 非当前 MVP）
+
+> **前置：** P0 conf 生成与审核落库已完成。本阶段需**单独部署** SeaTunnel Gateway 服务，与 DataAgent 解耦。
 
 **Gateway 服务（新建独立模块或仓库）：**
 
@@ -293,7 +295,7 @@ MCP Tool（可选）
 
 | 代号 | 含义 | 前置依赖 |
 |------|------|----------|
-| **P0** | 当前 MVP 完善（MySQL 同库 Jdbc BATCH） | 平台阶段 1（conf 生成 + 落库）已基本完成 |
+| **P0** | 当前 MVP 完善（MySQL 同库 Jdbc BATCH，**conf 生成 + 审核落库**） | 平台阶段 1 + 2（conf 生成、Schema 对齐、审核预览） |
 | **P1** | JDBC 跨源批同步 | P0 + 平台阶段 3（Gateway 执行闭环） |
 | **P2** | 异构批同步 + 数仓/OLAP Sink | P1 |
 | **P3** | CDC / 增量 / 流式 | P1 + Gateway/Worker 长作业能力 |
@@ -337,24 +339,28 @@ flowchart TB
 
 ### P0｜当前 MVP 完善（MySQL 同库 Jdbc BATCH）
 
+> **当前项目重点：** 自然语言 → 合法 HOCON conf 生成与审核落库。**执行闭环**（独立 SeaTunnel Gateway、状态轮询、exec 日志）依赖平台 [阶段 3](#阶段-3独立-seatunnel-gateway--执行闭环57-天)，**暂不纳入 P0 范围**。
+
 #### 1. 实现目标
 
 **业务目标**
 
-- 用户说「用 SeaTunnel 把 orders 同步到 orders_backup」，系统能生成合法 HOCON conf、写入 `seatunnel_task`、在审核页预览并提交执行。
+- 用户说「用 SeaTunnel 把 orders 同步到 orders_backup」，系统能生成合法 HOCON conf、写入 `seatunnel_task`、在审核页**预览 conf**。
 - 简单全表同步走**模板**（低延迟、无 LLM 幻觉）；含 JOIN/过滤/关联表走 **LLM** 路径。
 - 与 SQL 链路意图分流清晰：《数据同步任务》→ SQL；《SeaTunnel同步任务》→ conf。
+- 审核页「执行」为预留能力；真跑作业需后续部署独立 Gateway（见阶段 3）。
 
 **技术目标**
 
 | 目标项 | 当前状态 | P0 完成标准 |
 |--------|----------|-------------|
-| 意图路由 | ✅ 已实现 | 《SeaTunnel同步任务》稳定路由到 `SeatunnelConfigGenerateNode` |
-| conf 生成 | ✅ 模板 + LLM | JOIN/WHERE 语义正确写入 `source.Jdbc.query`（修复 `docs/缺陷.md` 已知问题） |
-| 表名解析 | ⚠️ 旧 `sync-intent-parse` | 接入 Schema RAG + `SyncTableResolveService`（对齐 SQL 链路） |
-| 任务落库 | ✅ `seatunnel_task` | `sourceDatasourceId` / `sinkDatasourceId` 字段正确写入（同库时相同 ID） |
-| 审核执行 | ⚠️ 部分 | Gateway 配置后可提交；状态轮询、日志、失败信息回写 |
-| Connector 范围 | MySQL Jdbc BATCH | Validator 继续禁止 Kafka/CDC/STREAMING |
+| 意图路由 | ✅ 已实现 | Intent → Evidence → QueryEnhance → `SeatunnelConfigGenerateNode` |
+| conf 生成 | ✅ 已实现 | 模板 + LLM；JOIN/WHERE 正确写入 `source.Jdbc.query`（`docs/缺陷.md` 已修复） |
+| 表名解析 | ✅ 已实现 | 独立轨：`SeatunnelSchemaRecallService` + `SeatunnelTableResolveService` + `SeatunnelRelatedTableExpander` |
+| 任务落库 | ✅ 已实现 | `seatunnel_task`；同库时 `sourceDatasourceId` / `sinkDatasourceId` 相同 |
+| 审核预览 | ✅ 已实现 | 列表、conf 全文预览、忽略无效任务 |
+| 审核执行 | ⏸️ 暂缓 | 依赖独立 Gateway；见 [阶段 3](#阶段-3独立-seatunnel-gateway--执行闭环57-天)（非 P0） |
+| Connector 范围 | ✅ 已实现 | Validator 禁止 Kafka/CDC/STREAMING |
 
 **Source → Sink 矩阵**
 
@@ -365,18 +371,18 @@ flowchart TB
 
 #### 2. 实现方案思路
 
-**2.1 表名与 Schema 对齐（最高优先级）**
+**2.1 表名与 Schema 对齐（✅ 已完成）**
 
 ```
 SeatunnelSyncService.generateConf()
-  ├─ 复用 SyncSchemaRecallService.recall(datasourceId, agentId, recallQuery)
-  ├─ 复用 SyncTableResolveService.resolve(recallQuery, multiTurn, schema, evidence)
-  ├─ 复用 SyncRelatedTableExpander.expand(...)
-  └─ 废弃或降级 sync-intent-parse 为兜底
+  ├─ SeatunnelSchemaRecallService.recall(datasourceId, agentId, recallQuery)
+  ├─ SeatunnelTableResolveService.resolve(recallQuery, multiTurn, schema, evidence)
+  ├─ SeatunnelRelatedTableExpander.expand(...)
+  └─ 已废弃 sync-intent-parse 主路径
 ```
 
-- Graph 侧：可选让 SeaTunnel 短链也经过 `EvidenceRecallNode` + `QueryEnhanceNode`（与 SQL 链路一致），或 Node 内直接调用上述 Service 并传入 state 中的 `canonical_query` / `evidence`。
-- `SeatunnelConfigGenerateNode` 从 state 读取 `INPUT_KEY`、`MULTI_TURN_CONTEXT`、`CANONICAL_QUERY`（若有）、Evidence 输出。
+- Graph：`IntentRecognitionNode` → `EvidenceRecallNode` → `QueryEnhanceNode` → `SeatunnelConfigGenerateNode`（与 SQL 同步轨前半段对齐，Schema 服务独立隔离）。
+- `SeatunnelConfigGenerateNode` 从 state 读取 `INPUT_KEY`、`MULTI_TURN_CONTEXT`、`CANONICAL_QUERY`、`evidence`。
 
 **2.2 模板 / LLM 分流（保持现有逻辑，修 Prompt）**
 
@@ -384,23 +390,25 @@ SeatunnelSyncService.generateConf()
 - 更新 `seatunnel-conf-generate.txt`：强调 WHERE 必须出现在 query 中；JOIN 表必须在 query 内连接。
 - `SeatunnelConfValidator`：校验 query 非空（LLM 路径）、禁止 STREAMING。
 
-**2.3 执行闭环**
+**2.3 执行闭环（⏸️ 暂缓，平台阶段 3）**
 
-- `SeatunnelTaskService.execute()`：提交后标记 RUNNING，**禁止** submit 成功即 SUCCESS。
-- 新增 `SeatunnelTaskStatusPoller`（或 Gateway 回调）：轮询 `GET /api/jobs/{id}` → 更新 SUCCESS/FAILED + `error_msg`。
-- 配置项：`spring.ai.alibaba.data-agent.seatunnel-gateway.*`（已有 `SeatunnelGatewayProperties`）。
+> 需独立部署 SeaTunnel Gateway 服务；当前 MVP 以 **conf 生成正确性** 为验收标准，以下项不在 P0 交付范围。
 
-**2.4 涉及类（改动清单）**
+- `SeatunnelTaskService.execute()`：提交后保持 RUNNING、禁止 submit 成功即 SUCCESS。
+- `SeatunnelGatewayClient.getJobStatus()` + `SeatunnelTaskStatusPoller`：轮询 `GET /api/jobs/{id}` → 回写 SUCCESS/FAILED + `error_msg`。
+- `SeatunnelTask.vue`：展示 `externalJobId`、exec 日志、RUNNING 自动刷新。
+- 配置项：`spring.ai.alibaba.data-agent.seatunnel-gateway.*`（已有占位，Gateway 未部署时 execute 可不可用）。
 
-| 类 / 文件 | 改动 |
+**2.4 涉及类（P0 改动清单）**
+
+| 类 / 文件 | 状态 |
 |-----------|------|
-| `SeatunnelSyncService` | 接入 Recall + Resolve；签名增加 canonicalQuery / evidence |
-| `SeatunnelConfigGenerateNode` | 从 state 传递 canonicalQuery / evidence |
-| `DataAgentConfiguration` | 可选：SeaTunnel 短链增加 Evidence + QueryEnhance 边 |
-| `seatunnel-conf-generate.txt` | 修复 JOIN + WHERE 示例与约束 |
-| `SeatunnelTaskService` | 执行状态机修正 |
-| `SeatunnelTaskStatusPoller` | **新建** |
-| `SeatunnelTask.vue` | 展示 exec 日志、错误信息 |
+| `SeatunnelSyncService` | ✅ 接入独立 Recall / Resolve / Expander |
+| `SeatunnelConfigGenerateNode` | ✅ 传递 canonicalQuery / evidence |
+| `DataAgentConfiguration` | ✅ SeaTunnel 经 Evidence + QueryEnhance |
+| `seatunnel-conf-generate.txt` | ✅ JOIN + WHERE 约束 |
+| `SeatunnelConfValidator` | ✅ query 非空、过滤语义 WHERE 校验 |
+| `SeatunnelTaskService` / `SeatunnelTaskStatusPoller` / exec 前端 | ⏸️ 阶段 3 |
 
 #### 3. 测试方案
 
@@ -414,27 +422,28 @@ SeatunnelSyncService.generateConf()
 | `SeatunnelConfPostProcessorTest` | 占位符替换、HOCON 转义 |
 | `SeatunnelConfGenerateServiceTest` | Mock LLM 返回 → validate 通过；含 Kafka 拒绝 |
 | `SeatunnelSyncServiceTest` | 模板路径不调 LLM；LLM 路径调 generateService；表不存在返回 error |
-| `SyncTableResolveServiceTest` | 业务名「订单明细」→ `order_items`（P0 新增/补充） |
+| `SeatunnelTableResolveServiceTest` | 业务名「订单明细」→ `order_items` |
+| `SeatunnelSchemaRecallServiceTest` | 独立 TopK / 阈值 |
 | `SeatunnelConfigGenerateNodeTest` | Node 输出流 + save 被调用 |
-| `IntentRecognitionDispatcherTest` | 《SeaTunnel同步任务》路由正确 |
+| `IntentRecognitionDispatcherTest` / `QueryEnhanceDispatcherTest` | SeaTunnel 路由正确 |
 
 **3.2 集成测试（Testcontainers / H2）**
 
-| 场景 | 验证点 |
-|------|--------|
-| 保存任务 | `SeatunnelTaskService.save()` → `seatunnel_task` 有 PENDING 记录 |
-| 执行 Mock Gateway | WireMock 模拟 `POST /api/jobs` 返回 jobId → 状态 RUNNING |
-| 表名校验 | 对接 H2 schema，源表不存在时返回明确错误 |
+| 场景 | 验证点 | 状态 |
+|------|--------|------|
+| 保存任务 | `SeatunnelTaskService.save()` → `seatunnel_task` 有 PENDING 记录 | 可选补充 |
+| 表名校验 | 对接 H2 schema，源表不存在时返回明确错误 | 可选补充 |
+| 执行 Mock Gateway | WireMock 模拟 Gateway 提交与状态轮询 | ⏸️ 阶段 3 |
 
 **3.3 端到端 / 手工验收**
 
-| # | 输入 | 预期 |
-|---|------|------|
-| E2E-0.1 | 「用 SeaTunnel 把 orders 同步到 orders_backup」 | `generationMode=TEMPLATE`；conf 含 `SELECT * FROM orders`；`seatunnel_task` PENDING |
-| E2E-0.2 | 「用 SeaTunnel 把 order_items 和 products 关联，排除 status=0，同步到 order_items_back」 | LLM 路径；query 含 JOIN **且** WHERE status 条件 |
-| E2E-0.3 | 「把订单明细同步到 order_items_back」 | Resolve 映射到 `order_items`，不报「源表不存在」 |
-| E2E-0.4 | 审核页执行（Gateway 已配置） | 状态 RUNNING → SUCCESS/FAILED；失败时有 error_msg |
-| E2E-0.5 | 「同步 orders 到 backup」（未提 SeaTunnel） | 仍走 SQL 链路 → `sql_check` |
+| # | 输入 | 预期 | 状态 |
+|---|------|------|------|
+| E2E-0.1 | 「用 SeaTunnel 把 orders 同步到 orders_backup」 | `generationMode=TEMPLATE`；conf 含 `SELECT * FROM orders`；`seatunnel_task` PENDING | ✅ |
+| E2E-0.2 | 「用 SeaTunnel 把 order_items 和 products 关联，排除 status=0，同步到 order_items_back」 | LLM 路径；query 含 JOIN **且** WHERE status 条件 | ✅ |
+| E2E-0.3 | 「把订单明细同步到 order_items_back」 | Resolve 映射到 `order_items`，不报「源表不存在」 | ✅ |
+| E2E-0.4 | 审核页执行（Gateway 已配置） | 状态 RUNNING → SUCCESS/FAILED；失败时有 error_msg | ⏸️ 阶段 3 |
+| E2E-0.5 | 「同步 orders 到 backup」（未提 SeaTunnel） | 仍走 SQL 链路 → `sql_check` | ✅ |
 
 **3.4 回归要求**
 
@@ -1057,8 +1066,8 @@ spring:
 
 ## 一句话总结
 
-**按「方案 A：新增《SeaTunnel同步任务》意图 → 新建 `SeatunnelConfigGenerateNode` → conf 落 MySQL → 页面审核 → 独立 SeaTunnel 服务执行」推进。** 现有 `SyncTaskNode` + `sql_check` SQL 审批链路**完整保留**；SeaTunnel 链路**复制其模式**新建，执行走 Gateway API。两条链路通过意图分类分流，互不影响。
+**按「方案 A：新增《SeaTunnel同步任务》意图 → 新建 `SeatunnelConfigGenerateNode` → conf 落 MySQL → 页面审核预览」推进。** 现有 `SyncTaskNode` + `sql_check` SQL 审批链路**完整保留**；SeaTunnel 链路**复制其模式**新建。**当前 MVP 验收 conf 生成正确性**；真执行作业见 [阶段 3](#阶段-3独立-seatunnel-gateway--执行闭环57-天-非当前-mvp)（独立 Gateway）。两条链路通过意图分类分流，互不影响。
 
 **建议起步：** 阶段 1 的 `intent-recognition.txt` 新分类 + `SeatunnelConfigBuilder`（模板）+ `SeatunnelSyncComplexityRouter` / `SeatunnelConfGenerateService`（LLM 分流）+ **新建** `SeatunnelConfigGenerateNode` + `seatunnel_task` 表——先验证《SeaTunnel同步任务》能正确生成 conf 并落库，同时确认《数据同步任务》仍走 `SyncTaskNode` 不受影响。
 
-**Connector 演进：** 按 [Connector 能力实现阶段（Source → Sink）](#connector-能力实现阶段source--sink) 分 **P0～P4** 推进；每个阶段均包含 **实现目标、实现方案思路、测试方案**（单元 / 集成 / E2E）。建议当前优先完成 **P0**（Schema 对齐 + 执行闭环 + 缺陷修复），再进入 **P1** JDBC 跨源。
+**Connector 演进：** 按 [Connector 能力实现阶段（Source → Sink）](#connector-能力实现阶段source--sink) 分 **P0～P4** 推进。**P0 已完成**（conf 生成 + Schema 对齐 + 审核落库）；**执行闭环**归入平台阶段 3，部署独立 Gateway 后再做。下一步可进入 **P1** JDBC 跨源 conf 生成。

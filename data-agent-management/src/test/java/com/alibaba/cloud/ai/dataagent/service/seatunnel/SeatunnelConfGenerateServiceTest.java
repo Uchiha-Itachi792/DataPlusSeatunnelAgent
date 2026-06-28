@@ -61,7 +61,7 @@ class SeatunnelConfGenerateServiceTest {
 		when(llmService.blockToString(any())).thenReturn("""
 				```hocon
 				env { job.mode = "BATCH" }
-				source { Jdbc { url = "__JDBC_URL__" password = "__JDBC_PASSWORD__" } }
+				source { Jdbc { url = "__JDBC_URL__" password = "__JDBC_PASSWORD__" query = "SELECT * FROM orders" } }
 				sink { Jdbc { url = "__JDBC_URL__" } }
 				```
 				""");

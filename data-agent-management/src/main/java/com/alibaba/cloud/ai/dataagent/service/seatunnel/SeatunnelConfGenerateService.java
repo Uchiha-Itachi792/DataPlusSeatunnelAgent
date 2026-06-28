@@ -50,7 +50,7 @@ public class SeatunnelConfGenerateService {
 			throw new IllegalStateException("未能生成有效的 SeaTunnel conf，请重新描述同步需求");
 		}
 
-		seatunnelConfValidator.validate(conf);
+		seatunnelConfValidator.validate(conf, dto.getUserInput());
 		log.info("Generated SeaTunnel conf via LLM, length={}", conf.length());
 		return conf;
 	}

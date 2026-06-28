@@ -97,4 +97,35 @@ class SeatunnelConfValidatorTest {
 		assertThrows(IllegalArgumentException.class, () -> validator.validate(conf));
 	}
 
+	@Test
+	void validate_emptySourceQuery_throws() {
+		String conf = """
+				env { job.mode = "BATCH" }
+				source { Jdbc { url = "__JDBC_URL__" query = "" } }
+				sink { Jdbc { url = "__JDBC_URL__" } }
+				""";
+		assertThrows(IllegalArgumentException.class, () -> validator.validate(conf));
+	}
+
+	@Test
+	void validate_filterIntentWithoutWhere_throws() {
+		String conf = """
+				env { job.mode = "BATCH" }
+				source { Jdbc { url = "__JDBC_URL__" query = "SELECT * FROM orders JOIN products ON orders.product_id = products.id" } }
+				sink { Jdbc { url = "__JDBC_URL__" table = "orders_back" } }
+				""";
+		assertThrows(IllegalArgumentException.class,
+				() -> validator.validate(conf, "排除 status=0 的数据"));
+	}
+
+	@Test
+	void validate_filterIntentWithWhere_passes() {
+		String conf = """
+				env { job.mode = "BATCH" }
+				source { Jdbc { url = "__JDBC_URL__" query = "SELECT * FROM orders WHERE status <> 0" } }
+				sink { Jdbc { url = "__JDBC_URL__" table = "orders_back" } }
+				""";
+		assertDoesNotThrow(() -> validator.validate(conf, "排除 status=0 的数据"));
+	}
+
 }

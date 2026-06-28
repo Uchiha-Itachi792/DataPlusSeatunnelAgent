@@ -15,6 +15,7 @@
  */
 package com.alibaba.cloud.ai.dataagent.workflow.node;
 
+import com.alibaba.cloud.ai.dataagent.dto.prompt.QueryEnhanceOutputDTO;
 import com.alibaba.cloud.ai.dataagent.dto.seatunnel.SeatunnelTaskResult;
 import com.alibaba.cloud.ai.dataagent.enums.TextType;
 import com.alibaba.cloud.ai.dataagent.service.seatunnel.SeatunnelSyncService;
@@ -30,6 +31,7 @@ import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
@@ -55,11 +57,13 @@ public class SeatunnelConfigGenerateNode implements NodeAction {
 		String userInput = StateUtil.getStringValue(state, INPUT_KEY);
 		String agentIdStr = StateUtil.getStringValue(state, AGENT_ID);
 		String multiTurn = StateUtil.getStringValue(state, MULTI_TURN_CONTEXT, "(无)");
+		String canonicalQuery = resolveCanonicalQuery(state, userInput);
+		String evidence = StateUtil.getStringValue(state, EVIDENCE, "无");
 
 		log.info("Processing SeaTunnel sync task for agent: {}, input: {}", agentIdStr, userInput);
 
 		Long agentId = Long.valueOf(agentIdStr);
-		SeatunnelTaskResult result = seatunnelSyncService.generateConf(agentId, userInput, multiTurn);
+		SeatunnelTaskResult result = seatunnelSyncService.generateConf(agentId, userInput, multiTurn, canonicalQuery, evidence);
 
 		boolean savedToApproval = false;
 		String saveError = null;
@@ -75,10 +79,7 @@ public class SeatunnelConfigGenerateNode implements NodeAction {
 		}
 
 		Flux<ChatResponse> messageFlux = buildMessageFlux(result, savedToApproval, saveError);
-
-		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(this.getClass(),
-				state, "正在生成 SeaTunnel 配置...", null, ignored -> Map.of(), messageFlux);
-
+		Flux<GraphResponse<StreamingOutput>> generator = FluxUtil.createStreamingGeneratorWithMessages(this.getClass(), state, "正在生成 SeaTunnel 配置...", null, ignored -> Map.of(), messageFlux);
 		return Map.of(SEATUNNEL_CONFIG_GENERATE_NODE_OUTPUT, generator);
 	}
 
@@ -88,8 +89,7 @@ public class SeatunnelConfigGenerateNode implements NodeAction {
 		}
 
 		List<ChatResponse> chunks = new ArrayList<>();
-		String modeHint = result.getGenerationMode() == SeatunnelTaskResult.GenerationMode.LLM
-				? "（LLM 复杂配置）" : "（模板全表同步）";
+		String modeHint = result.getGenerationMode() == SeatunnelTaskResult.GenerationMode.LLM ? "（LLM 复杂配置）" : "（模板全表同步）";
 		chunks.add(ChatResponseUtil.createResponse("已生成 SeaTunnel 作业配置" + modeHint + "："));
 		chunks.add(ChatResponseUtil.createPureResponse(TextType.CONFIG.getStartSign()));
 		chunks.add(ChatResponseUtil.createResponse(result.getJobConfig()));
@@ -103,6 +103,19 @@ public class SeatunnelConfigGenerateNode implements NodeAction {
 		}
 
 		return Flux.fromIterable(chunks);
+	}
+
+	private String resolveCanonicalQuery(OverAllState state, String userInput) {
+		try {
+			QueryEnhanceOutputDTO queryEnhance = StateUtil.getObjectValue(state, QUERY_ENHANCE_NODE_OUTPUT, QueryEnhanceOutputDTO.class);
+			if (queryEnhance != null && StringUtils.hasText(queryEnhance.getCanonicalQuery())) {
+				return queryEnhance.getCanonicalQuery().trim();
+			}
+		}
+		catch (Exception ex) {
+			log.debug("No query enhance output in state, using raw user input for SeaTunnel schema recall");
+		}
+		return userInput;
 	}
 
 }

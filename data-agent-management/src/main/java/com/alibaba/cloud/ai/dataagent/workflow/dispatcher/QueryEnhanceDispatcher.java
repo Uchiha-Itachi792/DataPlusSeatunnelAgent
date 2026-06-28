@@ -22,10 +22,12 @@ import com.alibaba.cloud.ai.graph.action.EdgeAction;
 import com.alibaba.cloud.ai.dataagent.util.StateUtil;
 import lombok.extern.slf4j.Slf4j;
 
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_CLASSIFICATION_SEATUNNEL_SYNC_TASK;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_CLASSIFICATION_SYNC_TASK;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.INTENT_RECOGNITION_NODE_OUTPUT;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.QUERY_ENHANCE_NODE_OUTPUT;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.SCHEMA_RECALL_NODE;
+import static com.alibaba.cloud.ai.dataagent.constant.Constant.SEATUNNEL_CONFIG_GENERATE_NODE;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.SYNC_TASK_NODE;
 import static com.alibaba.cloud.ai.graph.StateGraph.END;
 
@@ -68,6 +70,9 @@ public class QueryEnhanceDispatcher implements EdgeAction {
 	private String routeByIntent(OverAllState state) throws Exception {
 		IntentRecognitionOutputDTO intentResult = StateUtil.getObjectValue(state, INTENT_RECOGNITION_NODE_OUTPUT,
 				IntentRecognitionOutputDTO.class);
+		if (intentResult != null && INTENT_CLASSIFICATION_SEATUNNEL_SYNC_TASK.equals(intentResult.getClassification())) {
+			return SEATUNNEL_CONFIG_GENERATE_NODE;
+		}
 		if (intentResult != null && INTENT_CLASSIFICATION_SYNC_TASK.equals(intentResult.getClassification())) {
 			return SYNC_TASK_NODE;
 		}

@@ -119,6 +119,14 @@ public final class Constant {
 
 	public static final String SEATUNNEL_UNSUPPORTED_DATASOURCE_MSG = "当前仅支持 MySQL 数据源的 SeaTunnel conf 生成";
 
+	public static final String SEATUNNEL_SCHEMA_RECALL_EMPTY_MSG = """
+			未检索到相关数据表，无法解析 SeaTunnel 同步任务。可能原因：
+			1. 数据源尚未初始化向量 Schema；
+			2. 用户描述与现有表结构无关；
+			3. 嵌入模型与初始化时不一致，请重新初始化数据源。""";
+
+	public static final String SEATUNNEL_TABLE_RESOLVE_FAILED_MSG = "无法从 Schema 中确定 SeaTunnel 同步的源表或目标表，请明确说明同步需求";
+
 	public static final String SYNC_COLUMN_MISMATCH_MSG = "字段名字不一致，无法同步";
 
 	public static final String SYNC_PARSE_FAILED_MSG = "无法识别源表或目标表，请明确说明";

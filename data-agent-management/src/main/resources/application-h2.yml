@@ -56,7 +56,14 @@ spring:
             bucket-name: ${OSS_BUCKET_NAME:}
             custom-domain: ${OSS_CUSTOM_DOMAIN:}
         max-sql-retry-count: 10
-        # 独立 SeaTunnel Gateway 服务（为空时执行接口返回明确错误）
+        # SeaTunnel 同步链路独立配置（Schema 召回 TopK/阈值、关联表扩展策略，与 SQL 同步轨隔离）
+        seatunnel:
+          schema-recall:
+            table-topk-limit: 10
+            table-similarity-threshold: 0.2
+          related-table:
+            fk-auto-expand-enabled: true
+        # 独立 SeaTunnel Gateway（阶段 3；为空时 execute 不可用，MVP 以 conf 生成为主）
         seatunnel-gateway:
           base-url: ""
           submit-timeout-ms: 30000

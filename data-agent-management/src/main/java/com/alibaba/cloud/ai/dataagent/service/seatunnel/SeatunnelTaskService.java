@@ -30,7 +30,10 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * SeaTunnel 任务审批服务：持久化、列表查询、执行与忽略。
+ * SeaTunnel 任务审批服务：持久化、列表查询、忽略；以及预留的执行入口。
+ * <p>
+ * 当前 MVP 重点为 conf 生成与审核落库。{@link #execute(Integer)} 依赖独立 SeaTunnel Gateway
+ *（见 {@code docs/SEATUNNEL_EXTENSION_ROADMAP.md} 阶段 3），Gateway 未部署时非验收范围。
  */
 @Slf4j
 @Service
@@ -75,6 +78,9 @@ public class SeatunnelTaskService {
 
 	/**
 	 * 提交 SeaTunnel 作业（读库 conf → 调 Gateway）。
+	 * <p>
+	 * 完整状态机（RUNNING → 轮询 → SUCCESS/FAILED）待独立 Gateway 与 StatusPoller 落地后实现；
+	 * 当前 submit 成功即标记 SUCCESS，仅作 Gateway 对接占位。
 	 */
 	public void execute(Integer id) {
 		SeatunnelTask record = requirePendingRecord(id);

@@ -34,6 +34,8 @@
 6. **禁止**：Kafka、MySQL-CDC、Elasticsearch 等非 Jdbc connector；禁止 markdown 代码块；禁止注释（`#`、`//`）。
 7. **列映射**：sink 需明确 `table = "目标表名"`；复杂映射通过 source query 或 transform 完成。
 8. **关联过滤**：若用户按商品名/用户名等源表不存在的属性过滤，必须通过 JOIN 关联表并在 WHERE 中写条件。
+9. **WHERE 强制**：用户提到「排除」「过滤」「不要」「仅」「只」等过滤语义时，`source.Jdbc.query` **必须**包含 `WHERE` 子句，不得仅写 JOIN 而无过滤条件。
+10. **JOIN 完整性**：所有 relatedTables 必须在 query 内通过 JOIN 连接；过滤条件写在 WHERE，不要遗漏。
 
 # 输出
 直接输出 HOCON 配置，不要任何额外说明：

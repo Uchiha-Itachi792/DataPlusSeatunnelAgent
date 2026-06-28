@@ -18,6 +18,8 @@ package com.alibaba.cloud.ai.dataagent.service.seatunnel;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
+import java.util.Locale;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -36,7 +38,18 @@ public class SeatunnelConfValidator {
 	private static final Pattern PLAINTEXT_PASSWORD_PATTERN = Pattern.compile("password\\s*=\\s*\"(?!__JDBC_PASSWORD__)",
 			Pattern.CASE_INSENSITIVE);
 
+	private static final Pattern SOURCE_JDBC_QUERY_PATTERN = Pattern.compile(
+			"source\\s*\\{[\\s\\S]*?Jdbc\\s*\\{[\\s\\S]*?query\\s*=\\s*\"([^\"]*?)\"",
+			Pattern.CASE_INSENSITIVE);
+
 	public void validate(String conf) {
+		validate(conf, null);
+	}
+
+	/**
+	 * 校验 LLM 生成的 conf；{@code userInput} 非空时额外校验过滤语义是否体现在 query WHERE 中。
+	 */
+	public void validate(String conf, String userInput) {
 		if (!StringUtils.hasText(conf)) {
 			throw new IllegalArgumentException("生成的 SeaTunnel conf 为空，请重新描述同步需求");
 		}
@@ -60,6 +73,29 @@ public class SeatunnelConfValidator {
 		if (PLAINTEXT_PASSWORD_PATTERN.matcher(normalized).find()) {
 			throw new IllegalArgumentException("生成的 conf 包含明文密码，请使用 __JDBC_PASSWORD__ 占位符");
 		}
+		validateSourceQuery(normalized, userInput);
+	}
+
+	private void validateSourceQuery(String conf, String userInput) {
+		Matcher matcher = SOURCE_JDBC_QUERY_PATTERN.matcher(conf);
+		if (!matcher.find()) {
+			throw new IllegalArgumentException("生成的 SeaTunnel conf 的 source.Jdbc 缺少非空 query，请重新描述同步需求");
+		}
+		String query = matcher.group(1).trim();
+		if (!StringUtils.hasText(query)) {
+			throw new IllegalArgumentException("生成的 SeaTunnel conf 的 source.Jdbc.query 为空，请重新描述同步需求");
+		}
+		if (StringUtils.hasText(userInput) && hasFilterIntent(userInput)
+				&& !query.toUpperCase(Locale.ROOT).contains("WHERE")) {
+			throw new IllegalArgumentException("用户要求过滤/排除数据，但 source.Jdbc.query 缺少 WHERE 条件，请重新描述同步需求");
+		}
+	}
+
+	private boolean hasFilterIntent(String userInput) {
+		String lower = userInput.toLowerCase(Locale.ROOT);
+		return lower.contains("不要") || lower.contains("排除") || lower.contains("过滤") || lower.contains("不同步")
+				|| lower.contains("跳过") || lower.contains("仅") || lower.contains("只") || lower.contains("where")
+				|| lower.contains("status=");
 	}
 
 	private boolean containsBlock(String conf, String blockName) {

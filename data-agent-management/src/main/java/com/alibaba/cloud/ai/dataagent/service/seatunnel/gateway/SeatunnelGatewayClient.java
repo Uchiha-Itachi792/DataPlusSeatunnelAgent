@@ -17,6 +17,8 @@ package com.alibaba.cloud.ai.dataagent.service.seatunnel.gateway;
 
 /**
  * 独立 SeaTunnel Gateway 客户端。
+ * <p>
+ * 当前仅 {@link #submit(String)}；{@code getJobStatus} 与状态轮询见路线图阶段 3，Gateway 服务未部署前非 MVP 范围。
  */
 public interface SeatunnelGatewayClient {
 
