@@ -42,6 +42,12 @@ public class SeatunnelTaskDTO {
 
 	private String jobConfig;
 
+	private String syncPlan;
+
+	private String resolveTrace;
+
+	private String syncMode;
+
 	private String execStatus;
 
 	private String execStatusLabel;

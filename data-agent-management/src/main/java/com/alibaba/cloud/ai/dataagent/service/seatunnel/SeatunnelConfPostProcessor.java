@@ -39,7 +39,7 @@ public class SeatunnelConfPostProcessor {
 			.replace(PLACEHOLDER_JDBC_DATABASE, escapeHocon(dbConfig.getSchema()));
 	}
 
-	static String escapeHocon(String value) {
+	public static String escapeHocon(String value) {
 		if (value == null) {
 			return "";
 		}

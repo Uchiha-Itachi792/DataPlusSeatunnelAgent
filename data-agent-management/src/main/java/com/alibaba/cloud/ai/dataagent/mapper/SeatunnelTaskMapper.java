@@ -30,9 +30,9 @@ public interface SeatunnelTaskMapper {
 
 	@Insert("""
 			INSERT INTO seatunnel_task (agent_id, source_datasource_id, sink_datasource_id, source_table, target_table,
-			                            job_config, exec_status, create_time, update_time)
+			                            job_config, resolve_trace, sync_plan, sync_mode, exec_status, create_time, update_time)
 			VALUES (#{agentId}, #{sourceDatasourceId}, #{sinkDatasourceId}, #{sourceTable}, #{targetTable},
-			        #{jobConfig}, #{execStatus}, NOW(), NOW())
+			        #{jobConfig}, #{resolveTrace}, #{syncPlan}, #{syncMode}, #{execStatus}, NOW(), NOW())
 			""")
 	@Options(useGeneratedKeys = true, keyProperty = "id", keyColumn = "id")
 	int insert(SeatunnelTask task);
@@ -40,7 +40,7 @@ public interface SeatunnelTaskMapper {
 	@Select("""
 			<script>
 			SELECT id, agent_id, source_datasource_id, sink_datasource_id, source_table, target_table, job_config,
-			       exec_status, external_job_id, error_msg, create_time, update_time, exec_time
+			       resolve_trace, sync_plan, sync_mode, exec_status, external_job_id, error_msg, create_time, update_time, exec_time
 			FROM seatunnel_task
 			<where>
 			  <if test='status != null and status != ""'>
@@ -54,7 +54,7 @@ public interface SeatunnelTaskMapper {
 
 	@Select("""
 			SELECT id, agent_id, source_datasource_id, sink_datasource_id, source_table, target_table, job_config,
-			       exec_status, external_job_id, error_msg, create_time, update_time, exec_time
+			       resolve_trace, sync_plan, sync_mode, exec_status, external_job_id, error_msg, create_time, update_time, exec_time
 			FROM seatunnel_task WHERE id = #{id}
 			""")
 	SeatunnelTask selectById(@Param("id") Integer id);

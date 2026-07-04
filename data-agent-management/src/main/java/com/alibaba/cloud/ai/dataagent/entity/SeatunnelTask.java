@@ -46,6 +46,12 @@ public class SeatunnelTask {
 
 	private String jobConfig;
 
+	private String resolveTrace;
+
+	private String syncPlan;
+
+	private String syncMode;
+
 	private String execStatus;
 
 	private String externalJobId;

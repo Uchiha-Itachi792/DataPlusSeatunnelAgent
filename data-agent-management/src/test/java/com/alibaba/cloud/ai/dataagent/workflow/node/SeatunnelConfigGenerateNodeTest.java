@@ -18,8 +18,7 @@ package com.alibaba.cloud.ai.dataagent.workflow.node;
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.*;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
@@ -34,9 +33,12 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.alibaba.cloud.ai.dataagent.dto.prompt.QueryEnhanceOutputDTO;
-import com.alibaba.cloud.ai.dataagent.dto.seatunnel.SeatunnelTaskResult;
-import com.alibaba.cloud.ai.dataagent.service.seatunnel.SeatunnelSyncService;
+import com.alibaba.cloud.ai.dataagent.dto.syncjob.DataPointer;
+import com.alibaba.cloud.ai.dataagent.dto.syncjob.LlmSyncTask;
+import com.alibaba.cloud.ai.dataagent.dto.syncjob.SyncResolveResult;
+import com.alibaba.cloud.ai.dataagent.enums.SyncKind;
 import com.alibaba.cloud.ai.dataagent.service.seatunnel.SeatunnelTaskService;
+import com.alibaba.cloud.ai.dataagent.service.sync.SyncOrchestrator;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.state.strategy.ReplaceStrategy;
 
@@ -44,7 +46,7 @@ import com.alibaba.cloud.ai.graph.state.strategy.ReplaceStrategy;
 class SeatunnelConfigGenerateNodeTest {
 
 	@Mock
-	private SeatunnelSyncService seatunnelSyncService;
+	private SyncOrchestrator syncOrchestrator;
 
 	@Mock
 	private SeatunnelTaskService seatunnelTaskService;
@@ -53,14 +55,18 @@ class SeatunnelConfigGenerateNodeTest {
 
 	@BeforeEach
 	void setUp() {
-		node = new SeatunnelConfigGenerateNode(seatunnelSyncService, seatunnelTaskService);
+		node = new SeatunnelConfigGenerateNode(syncOrchestrator, seatunnelTaskService);
 	}
 
 	@Test
 	void apply_returnsGeneratorUnderOutputKey() throws Exception {
-		SeatunnelTaskResult result = SeatunnelTaskResult.ok("env {}", "order", "A", 1, 1);
-		when(seatunnelSyncService.generateConf(anyLong(), anyString(), anyString(), anyString(), anyString()))
-			.thenReturn(result);
+		LlmSyncTask plan = LlmSyncTask.builder()
+			.syncKind(SyncKind.TABLE_COPY)
+			.source(DataPointer.builder().ref("ds_1").object("order").build())
+			.sink(DataPointer.builder().ref("ds_1").object("A").build())
+			.build();
+		SyncResolveResult result = SyncResolveResult.success(plan, "env {}", null);
+		when(syncOrchestrator.resolve(any())).thenReturn(result);
 
 		OverAllState state = buildState();
 
@@ -69,15 +75,18 @@ class SeatunnelConfigGenerateNodeTest {
 		assertTrue(output.containsKey(SEATUNNEL_CONFIG_GENERATE_NODE_OUTPUT));
 		assertNotNull(output.get(SEATUNNEL_CONFIG_GENERATE_NODE_OUTPUT));
 		verify(seatunnelTaskService).save(eq(result), eq(1L));
-		verify(seatunnelSyncService).generateConf(eq(1L), anyString(), anyString(), eq("canonical seatunnel sync"),
-				eq("evidence text"));
+		verify(syncOrchestrator).resolve(any());
 	}
 
 	@Test
 	void apply_saveFailure_stillReturnsGenerator() throws Exception {
-		SeatunnelTaskResult result = SeatunnelTaskResult.ok("env {}", "order", "A", 1, 1);
-		when(seatunnelSyncService.generateConf(anyLong(), anyString(), anyString(), anyString(), anyString()))
-			.thenReturn(result);
+		LlmSyncTask plan = LlmSyncTask.builder()
+			.syncKind(SyncKind.TABLE_COPY)
+			.source(DataPointer.builder().ref("ds_1").object("order").build())
+			.sink(DataPointer.builder().ref("ds_1").object("A").build())
+			.build();
+		SyncResolveResult result = SyncResolveResult.success(plan, "env {}", null);
+		when(syncOrchestrator.resolve(any())).thenReturn(result);
 		doThrow(new IllegalStateException("db error")).when(seatunnelTaskService).save(eq(result), eq(1L));
 
 		OverAllState state = buildState();
@@ -90,9 +99,12 @@ class SeatunnelConfigGenerateNodeTest {
 
 	@Test
 	void apply_withoutQueryEnhance_fallsBackToUserInput() throws Exception {
-		SeatunnelTaskResult result = SeatunnelTaskResult.ok("env {}", "order", "A", 1, 1);
-		when(seatunnelSyncService.generateConf(anyLong(), anyString(), anyString(), anyString(), anyString()))
-			.thenReturn(result);
+		LlmSyncTask plan = LlmSyncTask.builder()
+			.syncKind(SyncKind.TABLE_COPY)
+			.source(DataPointer.builder().ref("ds_1").object("order").build())
+			.sink(DataPointer.builder().ref("ds_1").object("A").build())
+			.build();
+		when(syncOrchestrator.resolve(any())).thenReturn(SyncResolveResult.success(plan, "env {}", null));
 
 		OverAllState state = new OverAllState();
 		state.registerKeyAndStrategy(SEATUNNEL_CONFIG_GENERATE_NODE_OUTPUT, new ReplaceStrategy());
@@ -100,13 +112,12 @@ class SeatunnelConfigGenerateNodeTest {
 		state.registerKeyAndStrategy(AGENT_ID, new ReplaceStrategy());
 		state.registerKeyAndStrategy(MULTI_TURN_CONTEXT, new ReplaceStrategy());
 		state.registerKeyAndStrategy(EVIDENCE, new ReplaceStrategy());
-		state.updateState(Map.of(INPUT_KEY, "用 SeaTunnel 同步 order 到 A", AGENT_ID, "1", MULTI_TURN_CONTEXT, "(无)",
-				EVIDENCE, "无"));
+		state.updateState(
+				Map.of(INPUT_KEY, "用 SeaTunnel 同步 order 到 A", AGENT_ID, "1", MULTI_TURN_CONTEXT, "(无)", EVIDENCE, "无"));
 
 		node.apply(state);
 
-		verify(seatunnelSyncService).generateConf(eq(1L), eq("用 SeaTunnel 同步 order 到 A"), eq("(无)"),
-				eq("用 SeaTunnel 同步 order 到 A"), eq("无"));
+		verify(syncOrchestrator).resolve(any());
 	}
 
 	private OverAllState buildState() {

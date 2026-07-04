@@ -35,10 +35,16 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.alibaba.cloud.ai.dataagent.dto.seatunnel.SeatunnelTaskDTO;
 import com.alibaba.cloud.ai.dataagent.dto.seatunnel.SeatunnelTaskResult;
+import com.alibaba.cloud.ai.dataagent.dto.syncjob.DataPointer;
+import com.alibaba.cloud.ai.dataagent.dto.syncjob.LlmSyncTask;
+import com.alibaba.cloud.ai.dataagent.dto.syncjob.ResolveTrace;
+import com.alibaba.cloud.ai.dataagent.dto.syncjob.SyncResolveResult;
 import com.alibaba.cloud.ai.dataagent.entity.SeatunnelTask;
 import com.alibaba.cloud.ai.dataagent.enums.SeatunnelTaskExecStatus;
+import com.alibaba.cloud.ai.dataagent.enums.SyncKind;
 import com.alibaba.cloud.ai.dataagent.mapper.SeatunnelTaskMapper;
 import com.alibaba.cloud.ai.dataagent.service.seatunnel.gateway.SeatunnelGatewayClient;
+import com.alibaba.cloud.ai.dataagent.service.sync.catalog.SyncCatalogService;
 
 @ExtendWith(MockitoExtension.class)
 class SeatunnelTaskServiceTest {
@@ -49,11 +55,40 @@ class SeatunnelTaskServiceTest {
 	@Mock
 	private SeatunnelGatewayClient seatunnelGatewayClient;
 
+	@Mock
+	private SyncCatalogService syncCatalogService;
+
 	private SeatunnelTaskService seatunnelTaskService;
 
 	@BeforeEach
 	void setUp() {
-		seatunnelTaskService = new SeatunnelTaskService(seatunnelTaskMapper, seatunnelGatewayClient);
+		seatunnelTaskService = new SeatunnelTaskService(seatunnelTaskMapper, seatunnelGatewayClient,
+				syncCatalogService);
+	}
+
+	@Test
+	void save_syncResolveResult_insertsPendingRecord() {
+		LlmSyncTask plan = LlmSyncTask.builder()
+			.syncKind(SyncKind.TABLE_COPY)
+			.source(DataPointer.builder().ref("ds_1").object("s").build())
+			.sink(DataPointer.builder().ref("ds_1").object("t").build())
+			.build();
+		SyncResolveResult result = SyncResolveResult.success(plan, "env {}", ResolveTrace.builder().build());
+		when(syncCatalogService.resolveDatasourceId("ds_1")).thenReturn(java.util.Optional.of(1));
+		when(seatunnelTaskMapper.insert(any(SeatunnelTask.class))).thenAnswer(invocation -> {
+			SeatunnelTask record = invocation.getArgument(0);
+			record.setId(10);
+			return 1;
+		});
+
+		seatunnelTaskService.save(result, 1L);
+
+		ArgumentCaptor<SeatunnelTask> captor = ArgumentCaptor.forClass(SeatunnelTask.class);
+		verify(seatunnelTaskMapper).insert(captor.capture());
+		SeatunnelTask saved = captor.getValue();
+		assertEquals("SINGLE", saved.getSyncMode());
+		assertNotNull(saved.getSyncPlan());
+		assertNotNull(saved.getResolveTrace());
 	}
 
 	@Test
@@ -129,8 +164,7 @@ class SeatunnelTaskServiceTest {
 
 		ArgumentCaptor<SeatunnelTask> captor = ArgumentCaptor.forClass(SeatunnelTask.class);
 		verify(seatunnelTaskMapper, org.mockito.Mockito.times(2)).updateStatus(captor.capture());
-		assertEquals(SeatunnelTaskExecStatus.FAILED.getValue(),
-				captor.getAllValues().get(1).getExecStatus());
+		assertEquals(SeatunnelTaskExecStatus.FAILED.getValue(), captor.getAllValues().get(1).getExecStatus());
 	}
 
 	private SeatunnelTask pendingRecord() {

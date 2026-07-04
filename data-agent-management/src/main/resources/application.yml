@@ -56,11 +56,21 @@ spring:
         max-sql-retry-count: 10
         # SeaTunnel 同步链路独立配置（Schema 召回 TopK/阈值、关联表扩展策略，与 SQL 同步轨隔离）
         seatunnel:
+          default-job-mode: BATCH
+          default-parallelism: 1
+          enabled-sync-kinds: TABLE_COPY
           schema-recall:
             table-topk-limit: 10
             table-similarity-threshold: 0.2
           related-table:
             fk-auto-expand-enabled: true
+          resolve:
+            catalog-topk: 10
+            object-index-topk: 8
+            fast-path-enabled: true
+          spark:
+            enabled: false
+            executor-type: cli
         # 独立 SeaTunnel Gateway（阶段 3；为空时 execute 不可用，MVP 以 conf 生成为主）
         seatunnel-gateway:
           base-url: ""
