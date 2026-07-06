@@ -23,6 +23,11 @@ import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncTableResolveDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SeatunnelConfGenerationDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SeatunnelTableResolveDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SyncSqlGenerationDTO;
+import com.alibaba.cloud.ai.dataagent.dto.syncjob.DataPointer;
+import com.alibaba.cloud.ai.dataagent.dto.syncjob.LlmObjectResolve;
+import com.alibaba.cloud.ai.dataagent.dto.syncjob.LlmSyncIntent;
+import com.alibaba.cloud.ai.dataagent.dto.syncjob.LlmSyncSql;
+import com.alibaba.cloud.ai.dataagent.dto.syncjob.LlmSystemResolve;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.QueryEnhanceOutputDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SemanticConsistencyDTO;
 import com.alibaba.cloud.ai.dataagent.dto.prompt.SqlGenerationDTO;
@@ -288,6 +293,67 @@ public class PromptHelper {
 				SeatunnelTableResolveDTO.class);
 		params.put("format", beanOutputConverter.getFormat());
 		return PromptConstant.getSeatunnelTableResolvePromptTemplate().render(params);
+	}
+
+	/**
+	 * 构建同步 L1 Catalog 系统定位提示词。
+	 */
+	public static String buildSyncL1CatalogPrompt(String multiTurn, String latestQuery, String catalogSummary) {
+		Map<String, Object> params = new HashMap<>();
+		params.put("multi_turn", multiTurn != null ? multiTurn : "(无)");
+		params.put("latest_query", latestQuery);
+		params.put("catalog_summary", StringUtils.isNotBlank(catalogSummary) ? catalogSummary : "(空)");
+		BeanOutputConverter<LlmSystemResolve> converter = new BeanOutputConverter<>(LlmSystemResolve.class);
+		params.put("format", converter.getFormat());
+		return PromptConstant.getSyncL1CatalogPromptTemplate().render(params);
+	}
+
+	/**
+	 * 构建同步 L2 对象定位提示词。
+	 */
+	public static String buildSyncL2ObjectPrompt(String multiTurn, String latestQuery, String sourceRef, String targetRef,
+			String objectCandidates) {
+		Map<String, Object> params = new HashMap<>();
+		params.put("multi_turn", multiTurn != null ? multiTurn : "(无)");
+		params.put("latest_query", latestQuery);
+		params.put("source_ref", sourceRef != null ? sourceRef : "");
+		params.put("target_ref", targetRef != null ? targetRef : "");
+		params.put("object_candidates", StringUtils.isNotBlank(objectCandidates) ? objectCandidates : "(空)");
+		BeanOutputConverter<LlmObjectResolve> converter = new BeanOutputConverter<>(LlmObjectResolve.class);
+		params.put("format", converter.getFormat());
+		return PromptConstant.getSyncL2ObjectPromptTemplate().render(params);
+	}
+
+	/**
+	 * 构建同步 L3 意图提示词。
+	 */
+	public static String buildSyncL3IntentPrompt(String multiTurn, String latestQuery, DataPointer source,
+			DataPointer sink) {
+		Map<String, Object> params = new HashMap<>();
+		params.put("multi_turn", multiTurn != null ? multiTurn : "(无)");
+		params.put("latest_query", latestQuery);
+		params.put("source_pointer", source != null ? source.getRef() + "." + source.getObject() : "");
+		params.put("sink_pointer", sink != null ? sink.getRef() + "." + sink.getObject() : "");
+		BeanOutputConverter<LlmSyncIntent> converter = new BeanOutputConverter<>(LlmSyncIntent.class);
+		params.put("format", converter.getFormat());
+		return PromptConstant.getSyncL3IntentPromptTemplate().render(params);
+	}
+
+	/**
+	 * 构建同步 L4 MySQL SQL 提示词（M1 TABLE_COPY 通常不调用）。
+	 */
+	public static String buildSyncL4SqlMysqlPrompt(String multiTurn, String latestQuery, String syncKind,
+			DataPointer source, DataPointer sink, SchemaDTO schemaDTO) {
+		Map<String, Object> params = new HashMap<>();
+		params.put("multi_turn", multiTurn != null ? multiTurn : "(无)");
+		params.put("latest_query", latestQuery);
+		params.put("sync_kind", syncKind != null ? syncKind : "");
+		params.put("source_pointer", source != null ? source.getRef() + "." + source.getObject() : "");
+		params.put("sink_pointer", sink != null ? sink.getRef() + "." + sink.getObject() : "");
+		params.put("schema_info", schemaDTO != null ? buildMixMacSqlDbPrompt(schemaDTO, true) : "(无)");
+		BeanOutputConverter<LlmSyncSql> converter = new BeanOutputConverter<>(LlmSyncSql.class);
+		params.put("format", converter.getFormat());
+		return PromptConstant.getSyncL4SqlMysqlPromptTemplate().render(params);
 	}
 
 	/**

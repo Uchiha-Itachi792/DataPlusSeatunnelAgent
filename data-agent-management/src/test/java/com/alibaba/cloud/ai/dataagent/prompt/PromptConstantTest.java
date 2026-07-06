@@ -136,4 +136,12 @@ class PromptConstantTest {
 		assertNotNull(template);
 	}
 
+	@Test
+	void getSyncL1L2L3PromptTemplates_returnNonNull() {
+		assertNotNull(PromptConstant.getSyncL1CatalogPromptTemplate());
+		assertNotNull(PromptConstant.getSyncL2ObjectPromptTemplate());
+		assertNotNull(PromptConstant.getSyncL3IntentPromptTemplate());
+		assertNotNull(PromptConstant.getSyncL4SqlMysqlPromptTemplate());
+	}
+
 }

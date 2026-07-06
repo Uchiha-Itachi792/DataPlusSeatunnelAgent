@@ -38,7 +38,9 @@ import java.util.regex.Pattern;
 
 /**
  * M0 专用：不调 LLM，规则生成 L1～L4 层结果。
+ * @deprecated M1 起生产路径使用 {@link com.alibaba.cloud.ai.dataagent.service.sync.resolve} 分层服务。
  */
+@Deprecated
 @Component
 @AllArgsConstructor
 public class MockSyncLayerResolver {

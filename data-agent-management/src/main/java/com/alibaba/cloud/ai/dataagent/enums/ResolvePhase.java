@@ -15,17 +15,45 @@
  */
 package com.alibaba.cloud.ai.dataagent.enums;
 
+import lombok.Getter;
+
 /**
- * 渐进式解析阶段。
+ * 渐进式解析阶段（L1～L4），{@link #order} 显式定义流水线顺序，不依赖 {@link Enum#ordinal()}。
  */
+@Getter
 public enum ResolvePhase {
 
-	SYSTEM,
+	SYSTEM(1, "L1 系统定位", "确定 sourceRef / targetRef（从哪个数据源读、写到哪个数据源）"),
 
-	OBJECT,
+	OBJECT(2, "L2 对象定位", "确定 source / sink 表或文件（DataPointer）"),
 
-	INTENT,
+	INTENT(3, "L3 同步意图", "判定 syncKind（如 TABLE_COPY）或 Pipeline 骨架"),
 
-	SQL
+	SQL(4, "L4 SQL", "生成 SELECT SQL（JDBC）或 LoadStepSpec（文件源）");
+
+	private final int order;
+
+	private final String displayName;
+
+	private final String description;
+
+	ResolvePhase(int order, String displayName, String description) {
+		this.order = order;
+		this.displayName = displayName;
+		this.description = description;
+	}
+
+	/**
+	 * 从 {@code startPhase} 续跑时，是否应执行本阶段。
+	 * <p>
+	 * {@code startPhase} 为 null 时视为从 L1 开始；仅执行 order 大于等于起始阶段的层。
+	 *
+	 * @param startPhase 起始阶段（首次 resolve 为 SYSTEM；澄清续跑为 pendingPhase）
+	 * @return 是否应执行本阶段
+	 */
+	public boolean shouldRunFrom(ResolvePhase startPhase) {
+		int startOrder = startPhase != null ? startPhase.order : SYSTEM.order;
+		return startOrder <= this.order;
+	}
 
 }

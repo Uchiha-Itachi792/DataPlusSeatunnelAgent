@@ -54,6 +54,22 @@ public class PromptConstant {
 		return new PromptTemplate(PromptLoader.loadPrompt("seatunnel-conf-generate"));
 	}
 
+	public static PromptTemplate getSyncL1CatalogPromptTemplate() {
+		return new PromptTemplate(PromptLoader.loadPrompt("sync/L1-catalog"));
+	}
+
+	public static PromptTemplate getSyncL2ObjectPromptTemplate() {
+		return new PromptTemplate(PromptLoader.loadPrompt("sync/L2-object"));
+	}
+
+	public static PromptTemplate getSyncL3IntentPromptTemplate() {
+		return new PromptTemplate(PromptLoader.loadPrompt("sync/L3-intent"));
+	}
+
+	public static PromptTemplate getSyncL4SqlMysqlPromptTemplate() {
+		return new PromptTemplate(PromptLoader.loadPrompt("sync/L4-sql-mysql"));
+	}
+
 	// evidence-query-rewrite
 	public static PromptTemplate getEvidenceQueryRewritePromptTemplate() {
 		return new PromptTemplate(PromptLoader.loadPrompt("evidence-query-rewrite"));

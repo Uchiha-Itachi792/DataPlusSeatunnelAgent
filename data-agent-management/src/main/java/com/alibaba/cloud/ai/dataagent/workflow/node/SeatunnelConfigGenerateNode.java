@@ -21,6 +21,7 @@ import com.alibaba.cloud.ai.dataagent.dto.syncjob.SyncResolveResult;
 import com.alibaba.cloud.ai.dataagent.enums.TextType;
 import com.alibaba.cloud.ai.dataagent.service.seatunnel.SeatunnelTaskService;
 import com.alibaba.cloud.ai.dataagent.service.sync.SyncOrchestrator;
+import com.alibaba.cloud.ai.dataagent.service.sync.SyncResolveStateStore;
 import com.alibaba.cloud.ai.dataagent.util.ChatResponseUtil;
 import com.alibaba.cloud.ai.dataagent.util.FluxUtil;
 import com.alibaba.cloud.ai.dataagent.util.StateUtil;
@@ -55,6 +56,8 @@ public class SeatunnelConfigGenerateNode implements NodeAction {
 
 	private final SeatunnelTaskService seatunnelTaskService;
 
+	private final SyncResolveStateStore syncResolveStateStore;
+
 	@Override
 	public Map<String, Object> apply(OverAllState state) throws Exception {
 		String userInput = StateUtil.getStringValue(state, INPUT_KEY);
@@ -74,7 +77,14 @@ public class SeatunnelConfigGenerateNode implements NodeAction {
 			.threadId(threadId)
 			.build();
 
-		SyncResolveResult result = syncOrchestrator.resolve(request);
+		SyncResolveResult result;
+		if (StringUtils.hasText(threadId) && syncResolveStateStore.has(threadId)) {
+			log.info("Resuming SeaTunnel sync clarify for threadId={}", threadId);
+			result = syncOrchestrator.resume(request, userInput);
+		}
+		else {
+			result = syncOrchestrator.resolve(request);
+		}
 
 		boolean savedToApproval = false;
 		String saveError = null;

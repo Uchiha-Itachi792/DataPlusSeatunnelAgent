@@ -1,0 +1,8 @@
+{
+  "phase": "OBJECT",
+  "source": { "ref": "ds_1", "object": "orders" },
+  "sink": { "ref": "ds_1", "object": "orders_backup" },
+  "others": [],
+  "needClarify": false,
+  "clarifyQuestions": []
+}

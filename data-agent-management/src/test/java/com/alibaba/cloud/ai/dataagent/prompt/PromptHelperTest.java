@@ -334,4 +334,40 @@ class PromptHelperTest {
 		assertNotNull(result);
 	}
 
+	@Test
+	void buildSyncL2ObjectPrompt_rendersWithoutTemplateError() {
+		String candidates = "orders（订单表） [ref=ds_1]\norders_backup（订单备份表） [ref=ds_1]";
+		String result = PromptHelper.buildSyncL2ObjectPrompt("(无)",
+				"如何使用 SeaTunnel 将 orders 表的数据同步到 orders_backup 表？", "ds_1", "ds_1", candidates);
+		assertNotNull(result);
+		assertTrue(result.contains("orders（订单表）"));
+		assertTrue(result.contains("sourceRef=ds_1"));
+		assertTrue(result.contains("JSON Schema"));
+	}
+
+	@Test
+	void buildSyncL1CatalogPrompt_rendersWithoutTemplateError() {
+		String result = PromptHelper.buildSyncL1CatalogPrompt("(无)", "用 SeaTunnel 同步 orders 到 orders_backup",
+				"ds_1 JDBC 订单库");
+		assertNotNull(result);
+		assertTrue(result.contains("ds_1 JDBC 订单库"));
+	}
+
+	@Test
+	void buildSyncL3IntentPrompt_rendersWithoutTemplateError() {
+		com.alibaba.cloud.ai.dataagent.dto.syncjob.DataPointer source = com.alibaba.cloud.ai.dataagent.dto.syncjob.DataPointer
+			.builder()
+			.ref("ds_1")
+			.object("orders")
+			.build();
+		com.alibaba.cloud.ai.dataagent.dto.syncjob.DataPointer sink = com.alibaba.cloud.ai.dataagent.dto.syncjob.DataPointer
+			.builder()
+			.ref("ds_1")
+			.object("orders_backup")
+			.build();
+		String result = PromptHelper.buildSyncL3IntentPrompt("(无)", "同步 orders 到 orders_backup", source, sink);
+		assertNotNull(result);
+		assertTrue(result.contains("orders"));
+	}
+
 }

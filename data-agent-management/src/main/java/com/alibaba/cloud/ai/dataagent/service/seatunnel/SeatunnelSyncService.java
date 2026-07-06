@@ -45,7 +45,9 @@ import static com.alibaba.cloud.ai.dataagent.constant.Constant.SEATUNNEL_UNSUPPO
 
 /**
  * SeaTunnel conf 生成服务：独立 Schema 召回 + 表名消歧，映射数据源并生成 HOCON 配置（模板/LLM 分流）。
+ * @deprecated M1 起 Graph 走 {@link com.alibaba.cloud.ai.dataagent.service.sync.SyncOrchestrator}。
  */
+@Deprecated
 @Slf4j
 @Service
 @AllArgsConstructor

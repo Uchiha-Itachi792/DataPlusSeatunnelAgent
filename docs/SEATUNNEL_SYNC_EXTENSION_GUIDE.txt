@@ -1,0 +1,692 @@
+================================================================================
+  SeaTunnel 数据同步扩展指导书
+================================================================================
+
+写给谁：做 SeaTunnel 同步链路的后端 / 全栈
+版本：v1.3
+更新：2026-07-01
+
+和 SYNC_JOB_LLM_SPEC.md、SEATUNNEL_REFACTOR_PLAN.md 冲突时，以本文件为准。
+
+
+================================================================================
+一、要解决什么问题
+================================================================================
+
+用户说：「把订单表同步到备份表，不要已删除的」。
+我们要生成可执行的同步方案，人审批后交给 SeaTunnel 跑。
+
+后面会接很多系统（MySQL、Oracle、Iceberg、Hive、S3…），表也很多。
+不能一次把「所有库、所有表、所有字段」都塞进 Prompt，又慢又容易瞎编。
+
+所以分两步：
+  1. 先定哪个系统（ref）
+  2. 再定哪张表 / 哪个文件（object）
+
+
+================================================================================
+二、四条铁律（扩展也不能破）
+================================================================================
+
+P1. LLM 不写 conf，也不写 url、密码、driver、并行度
+P2. 产品就两种：单步同步、多步 Pipeline
+P3. Pipeline 里复杂 JOIN/UNION/聚合用 Spark SQL，SQL 还是 LLM 写
+P4. conf 永远 Java 用模板拼，不交给 LLM
+
+一句话：
+  LLM = 听懂 + 出 JSON 计划 + 写 SQL
+  Java  = 校验 + 拼 conf + 调度 + 填连接信息
+
+
+================================================================================
+三、LLM 和 Java 各干啥
+================================================================================
+
+LLM 要干：
+  - 从候选清单里选 ref、表名、文件名
+  - 说 syncKind 或 Pipeline 几步
+  - 有过滤、JOIN、字段映射时写 SELECT 或 Spark SQL
+  - 信息不够就 needClarify，列出要问的问题
+
+LLM 不能干：
+  - 写 HOCON conf（SeatunnelConfGenerateService 那套废弃）
+  - 写连接串、密码、driver
+  - 从 SQL 反推 syncKind（L3 必须显式给）
+
+Java 要干：
+  - 每层校验（ref、表名必须在 Catalog / 对象索引里真有）
+  - L1～L4 汇总成最终计划
+  - 按 syncKind 选 Compiler 拼 conf
+  - 查 url/user/password 填进去
+  - 审批、落库、调 Gateway
+
+什么时候 LLM 写 SQL？
+  - 有过滤、JOIN、聚合、字段换算、多表 → LLM 写
+  - 全表拷贝、无条件 → Java 写 SELECT *，不调 LLM
+
+
+================================================================================
+四、整体怎么跑
+================================================================================
+
+用户说话
+  → 意图识别：这是 SeaTunnel 同步任务
+  → SyncOrchestrator（独立服务，别拆成 16 个 Graph 节点）
+  → 判断单步还是 Pipeline
+  → L1 → L2 → L3 → L4（简单任务可走 Fast Path）
+  → 汇总 LlmSyncTask 或 LlmSyncPipeline
+  → Compiler 拼 conf
+  → 落库 → 审批 → 执行
+
+和 Graph 的关系：
+  - Graph 只留认意图的入口 Node，认出来就调 SyncOrchestrator
+  - 别把 L1～L4 每个都做成 Graph Node
+  - 就一条 SeaTunnel 链路，别复活《普通数据同步任务》测试链路
+
+落库字段：
+  resolve_trace  每层 LLM 快照，审批和重试用
+  sync_plan      最终计划 JSON（schemaVersion）
+  job_config     编译好的 conf（改模板可只重编译）
+  exec_status    审批、执行状态
+
+
+================================================================================
+五、v1 做啥、不做啥
+================================================================================
+
+要做：
+  BATCH 批处理
+  单步：TABLE_COPY、COLUMN_MAP、TABLE_JOIN、TABLE_UNION
+  多步：LOAD（SeaTunnel 搬）+ SPARK（Spark SQL 算）
+  JDBC 先 MySQL，Catalog 预留 Oracle/Iceberg/Hive/S3
+  写入默认 APPEND，覆盖用 L3 的 writeMode
+
+不做（needClarify 或直接拒）：
+  CDC、STREAMING、Kafka Sink
+  让人直接改 conf 文本
+  自动 cron
+  失败自动改 SQL 重试（以后再说）
+  LLM 整段吐 HOCON
+
+
+================================================================================
+六、单步还是 Pipeline
+================================================================================
+
+【单步】一个 SeaTunnel 作业：一条 SELECT → 一个目标表。
+  同库 JOIN、同库 UNION 也算单步。
+  异库但只是「A 库一张表拷到 B 库一张表」→ 也是单步（一个 conf 里双 JDBC）。
+
+【Pipeline】至少 2 步。LOAD 用 SeaTunnel，SPARK 用 Spark SQL。
+  跨源 staging、库+文件+湖混着来、异源 UNION、先落地再 JOIN，走这。
+
+走多步（满足一条就行）：
+  多 ref 要先 staging / 多种介质 / 多目标表 / 异源 UNION / 必须先 LOAD 再 Spark
+
+走单步（要同时满足）：
+  只有一个目标表，且一条 SELECT 能写完
+
+别搞错：
+  「两个 ref」不一定是 Pipeline。
+  异库单表复制 → 单步
+  异库两表 UNION 再入库 → Pipeline + Spark
+
+
+================================================================================
+七、L1～L4 渐进式解析
+================================================================================
+
+为啥分层？
+  不能一开始就把所有系统、表、列都给 LLM。
+  像 Skills：先看摘要，需要再往下翻。
+
+四层：
+
+  L1 系统定位
+     给 LLM：ref + 类型 + 一句话（不给表、不给列）
+     输出：sourceRef、targetRef
+     DTO：LlmSystemResolve
+
+  L2 对象定位
+     给 LLM：L1 选中 ref 下 TopK 表/文件（名 + 注释）
+     输出：source、sink、others（都是 ref+object 成对）
+     DTO：LlmObjectResolve
+
+  L3 同步意图
+     给 LLM：相关表的列级 Schema
+     输出：syncKind（单步）或 Pipeline 骨架（多步，此步不带 sql）
+     DTO：LlmSyncIntent
+
+  L4 SQL / LoadStep
+     给 LLM：完整相关 Schema
+     输出：sql（JDBC）或 LoadStepSpec（文件源，无 SQL）
+     DTO：LlmSyncSql
+
+顺序：用户输入 → L1 → L2 → L3 → L4 → 汇总 → 拼 conf
+
+注意：
+  - Catalog 太大时 L1 前先检索，ref 缩到 5～10 个（见第八节）
+  - 单步 LOAD 用 MySQL 方言；Spark 步用 Spark SQL，别共用 Prompt
+  - 各层从哪读、存哪儿，见第十一节
+  - 渐进式 ≠ 每层都调 LLM（见第十节 Fast Path）
+
+
+================================================================================
+八、向量检索和分层解析怎么配合
+================================================================================
+
+别误会：「有向量库了，能不能一次 RAG 全召回 Schema，跳过分层，直接让 LLM 出 plan/conf？」
+
+答案：不行。
+
+  向量检索 → L1/L2 的候选召回，缩小 ref 和表名范围
+  L1～L4 分层 → 结构化决策、校验、Pipeline 状态机、最终 plan
+  两者叠加才对。用一次 RAG 替代分层 = 回到老路子「LLM 直接吐 conf」，禁止。
+
+向量检索干啥（找候选，不拍板）：
+
+  单靠 embedding 向量 RAG 有短板：
+    - 用户说准表名（order_items）时，语义向量不一定排第一
+    - 缩写、拼音、中英混写（订单表、ord_item）向量容易偏
+    - 表名很像时（order_item / order_items）容易混
+
+  所以 L1/L2 候选召回用「向量 + ES 关键词」混合检索（项目已有）：
+    - 向量路：按用户话 embedding 找语义相近的 ref / 表名摘要
+    - 关键词路：ES 对 Document 的 text/content 做全文匹配（表名、注释里的字）
+    - 两路结果 Fusion 合并成 TopK，再进 L1/L2 Prompt
+
+  代码：AgentVectorStoreService.search → HybridRetrievalStrategy（如 ElasticsearchHybridRetrievalStrategy）
+  配置：spring.ai.alibaba.data-agent.vector-store.enable-hybrid-search=true
+        且向量库后端为 Elasticsearch（spring.ai.vectorstore.type=elasticsearch）
+  未开混合或未接 ES 时，退化为纯向量 RAG，功能仍可用，L1/L2 召回质量可能差一截。
+
+  注意：混合检索只管 L1/L2 缩小候选，不替代 L1～L4 分层，更不能一次 RAG 直接出 plan/conf。
+
+  L1 前：Catalog ref 摘要 TopK
+         Catalog 真相在关系库；向量库 catalog 只是 M3 可选的检索副本
+  L2 前：各 ref 下表/文件摘要 TopK（向量库 table / file，可走混合检索）
+  L3/L4：不对用户话做全库 RAG
+         按 L2 定好的 ref+object 精确拉列（column / file_column 或 JDBC/S3 实时）
+
+  检索结果只是候选，LLM 从候选里选，Java 还要校验。
+  配置：resolve.catalog-topk 默认 10，resolve.object-index-topk 默认 8。
+
+分层解析干啥（决策 + 门禁）：
+
+  - 每层固定 DTO，不是自由文本
+  - ref 必须在 Catalog、object 必须在对象索引、syncKind 和 others 对得上
+  - Pipeline：先 L3 骨架 → 各 LOAD 的 L1/L2/L4 → 再 Spark L4，别跳步
+  - needClarify 就停，从该层续跑
+  - 汇总后 Compiler 拼 conf（P1/P4）
+
+为啥不能一次 RAG 替代：
+  1. 老路子废弃：RAG → LLM 吐 HOCON，难校验易幻觉
+  2. syncKind、dependsOn、writeMode 要分步 JSON
+  3. 多 ref 多表时 TopK 仍可能漏表、混错表
+  4. L3 定了 syncKind 才知道要不要 L4；Pipeline 必须先骨架再 SQL
+
+推荐链路（M3 起）：
+
+  用户输入
+    → [检索] Catalog TopK ref
+    → L1 定 ref
+    → [检索] ObjectIndex TopK
+    → L2 定表/文件
+    → [精确拉] 列级 Schema
+    → L3 定 syncKind / 骨架
+    → L4 出 SQL 或 LoadStepSpec（全表 COPY 可跳过）
+    → 校验 → 汇总 → 编译 → 落库
+
+
+================================================================================
+九、执行顺序（别乱跳）
+================================================================================
+
+【单步】
+  single → L1 → L2 → L3 → L4（TABLE_COPY 可跳过 L4）→ 汇总 → 编译 → 落库
+
+【Pipeline】
+  1. 先 L3：骨架（几步、依赖，还没有 sql）
+  2. 每个 LOAD：ref 不清就 L1 → L2 → L4（scope=step:1、step:2…）
+  3. LOAD 都完再 L4 Spark SQL（scope=spark:3）
+  4. 汇总 → 编译 → 落库 → 按 dependsOn 执行
+
+禁止：骨架没定就写 Spark SQL；LOAD 没齐就写 SPARK。
+
+needClarify=true：后面全停，只追问，不编译 conf。
+
+多轮：存 SyncResolveState + threadId，从出问题那层重跑。
+审批后只改 SQL：只更新 L4/sync_plan，重新 compile，别重跑 L1～L3。
+
+
+================================================================================
+十、Fast Path（简单任务少调 LLM）
+================================================================================
+
+  - 明显全表 TABLE_COPY、表名清楚 → L3/L4 跳过，Java 定 syncKind + SELECT *
+  - L2 就一个候选且分数高 → 直接采纳，不调 LLM
+  - 已确定 single + 单 ref → L1 可从 Agent 默认源推断（仍要校验）
+
+Catalog、对象索引的 Java 校验不能跳，否则 LLM 又会瞎编表名。
+
+
+================================================================================
+十一、存哪儿：Catalog、对象索引、Schema
+================================================================================
+
+先说清楚三层：
+
+  (A) 外部系统 — 业务真数据
+      MySQL 表里的行、S3 上的 CSV 文件。SeaTunnel 执行时读写这里。
+
+  (B) DataAgent 关系库 — 连接、授权、任务
+      datasource、agent_datasource、agent_datasource_tables、seatunnel_task
+      存 url、密码、bucket/prefix、plan、conf。不存业务行。
+
+  (C) 向量库 — Schema 元数据索引
+      表名、注释、列名、列类型等。不存业务行、不存 CSV 全文、不存密码。
+      后端可切换：默认 SimpleVectorStore（内存）；生产常用 Elasticsearch 或 pgvector。
+      L1/L2 检索建议开混合检索（向量 + ES 关键词 Fusion），弥补纯 RAG 对表名/缩写不准的问题（见第八节）。
+
+别搞混：
+  × Catalog 全在向量库     → ref 清单真相在 (B)，(C) 只是 M3 可选检索副本
+  × 向量库只存引用         → L2 存 object 摘要，L3/L4 用 column/file_column 存列结构
+  × DataAgent DB 存业务数据 → 只存连接和任务，业务数据在 (A)
+
+连接串、密码、物理 path  never 进 LLM 的 JSON。
+
+
+----------------------------------------------------------------------
+11.1  L1～L4 各层读什么、存哪儿
+----------------------------------------------------------------------
+
+下面表格里的 (A)(B)(C) 就是上一节说的「三层存储」，先记牢再往下看：
+
+  (A) 外部系统     客户/MySQL、S3 上的真实数据和文件（SeaTunnel 跑任务时读写这里）
+  (B) 关系库       DataAgent 自己的 MySQL/H2：datasource、agent_datasource、
+                   seatunnel_task 等（存连接串、密码、ref 清单、plan、conf）
+  (C) 向量库       AgentVectorStore：表名/列名/注释等 Schema 摘要（供 L2 检索、L3/L4 拉列）
+                   后端可以是内存、Elasticsearch 或 pgvector，见上一节
+
+  表头「真相存哪」= 这一层认定结果以谁为准；
+  「向量库干啥」= (C) 在这一步具体怎么用（不是第四层，只是 (C) 的用法）。
+
+  | 层      | 输出什么              | 本层从哪读数据        | 真相存哪（以谁为准）              | (C) 向量库这一步干啥        |
+  |---------|----------------------|----------------------|-----------------------------------|----------------------------|
+  | L1 前   | 无                   | 用户话 + ref 候选    | (B) 关系库里的 Catalog            | M3 可选：catalog 摘要 TopK |
+  | L1      | sourceRef/targetRef  | ref 摘要清单         | (B) datasource + agent_datasource | 仅检索副本，真相仍在 (B)   |
+  | L2 前   | 无                   | 用户话 + 表/文件候选 | (C) table / file 索引             | TopK 混合检索（向量+ES）   |
+  | L2      | source/sink/others   | 表名/文件名摘要      | (C) 对象索引 + (B) 表白名单       | 检索 + exists 校验         |
+  | L3      | syncKind / 骨架      | 列级 Schema 片段     | (C) column / file_column          | 按 ref+object 精确拉列     |
+  | L4      | sql / LoadStepSpec   | 完整相关 Schema      | (C) 列结构；产出落 (B) sync_plan  | 同 L3，不对用户话全库 RAG  |
+  | 编译    | conf                 | 最终 plan + (B) 连接 | (B) seatunnel_task.job_config     | 不参与                     |
+
+  偶尔 L3/L4 也会从 (A) 实时读列结构（JDBC 直连 information_schema），
+  但 L2 的表名候选、L3/L4 的列信息仍以 (C) 索引为主；(A) 是 SeaTunnel 执行期才大量读业务行。
+
+L1 — 选 ref（哪个库、哪个 S3 区）
+  真相：(B) datasource + agent_datasource，SyncCatalogService.listRefs
+  Prompt 示例：
+    ds_mysql_orders   JDBC    订单 MySQL 生产库
+    s3_raw            S3      原始 CSV 区
+  M0 代码：MockSyncCatalogService、SystemResolveValidator
+
+L2 — 选 object（哪张表、哪个逻辑文件）
+  真相：(C) vectorType=table（JDBC）或 file（S3）
+  白名单：(B) agent_datasource_tables；S3 path 在 extra_config，不给 LLM
+
+L3 — 定 syncKind 或 Pipeline 骨架
+  读 L2 的 DataPointer + 列级 Schema
+  JDBC：getColumnDocumentsByTableName 或 JDBC 实时
+  文件：getFileSchema → file_column（M3）
+
+L4 — 出 sql 或 LoadStepSpec
+  JDBC 写 SELECT；文件写 format、delimiter、columnMapping
+  落 (B) sync_plan；编译后 conf 落 job_config
+
+
+----------------------------------------------------------------------
+11.2  JDBC 表 Schema（分析轨已有，M3 并入 SyncObjectIndexService）
+----------------------------------------------------------------------
+
+  物理库 (A)     真实表结构，Accessor 读
+  向量库 (C)     table Document（L2 检索）、column Document（L3/L4 拉列）
+  关系库 (B)     datasource 连接信息、agent_datasource_tables 白名单
+
+  表 Document：vectorType=table，text=表注释或表名
+  列 Document：vectorType=column，text=列注释或列名
+
+  时间线：
+    T0 建数据源 → 写 datasource（只有连接，没有列）
+    T1 Agent 勾选表、点「初始化 Schema」→ 读物理库 → 写 table/column 到向量库
+    T2 表结构变了 → 再初始化覆盖
+    T3 L3/L4 前 → 按表名精确拉 column，不做全库 RAG
+
+  入口：AgentDatasourceController.initSchema → SchemaService.schema()
+
+
+----------------------------------------------------------------------
+11.3  S3 / 文件 Schema（M3 规划，M0 未实现）
+----------------------------------------------------------------------
+
+  ① 连接和 path     (B) datasource.extra_config（bucket、prefix、密钥）
+  ② object 摘要     (C) vectorType=file（逻辑名，不是 s3:// 路径）
+  ③ 列结构          (C) vectorType=file_column
+  ④ 单次列映射      (B) sync_plan 里的 LoadStepSpec
+
+  object 是逻辑名如 offline_orders_csv，真实路径只在 extra_config。
+  L4：JDBC 出 sql，文件出 LoadStepSpec，没有 SQL。
+
+  M0：同步轨没有 S3、没有 file 索引、没有 LoadStepSpec，只有 JDBC Mock TABLE_COPY。
+
+
+----------------------------------------------------------------------
+11.4  JDBC 和 S3 对照
+----------------------------------------------------------------------
+
+  | 项目       | JDBC              | S3/文件              |
+  |------------|-------------------|----------------------|
+  | L2 摘要    | vectorType=table  | vectorType=file      |
+  | L3/L4 列   | vectorType=column | vectorType=file_column |
+  | L4 产出    | sql               | LoadStepSpec         |
+  | 索引时机   | 初始化 Schema     | 刷新对象索引         |
+  | M0 同步轨  | Mock，无向量      | 未实现               |
+
+  共同点：L2 只检索摘要，L3/L4 按 ref+object 精确拉列，凭证不进 LLM。
+
+  Catalog 和 Agent 知识库 FileStorage 不是一回事：
+    FileStorage 是 Agent 上传的知识文档；
+    同步用的 S3 object 挂在 connector_type=S3 的 datasource 上。
+
+
+================================================================================
+十二、Compiler 拼 conf
+================================================================================
+
+Java 填：
+  env（并行度、BATCH）
+  source Jdbc（url、driver、user、password、query）— query 来自 L4
+  source File/S3 — 来自 LoadStepSpec + extra_config
+  sink Jdbc（url、table…）
+
+单步：SingleStepCompiler + SingleStepCompilerRegistry
+多步：PipelineStepCompiler，LOAD 出 SeaTunnel conf，SPARK 出 Spark 作业
+
+加新同步类型 = 加枚举 + 新 Compiler，别写一大坨 if/else。
+异库单步：一个 conf 里 source、sink 各一套 JDBC。
+
+凭证用 SeatunnelConfPostProcessor 思路扩展多 ref；日志别打密码。
+
+示意：
+  env { parallelism = 1; job.mode = "BATCH" }
+  source { Jdbc { url=...; query="SELECT ..." } }
+  sink   { Jdbc { url=...; table="..." } }
+
+
+================================================================================
+十三、SeaTunnel 能力边界
+================================================================================
+
+  同库 JOIN/UNION           → 单步，写在 source.Jdbc.query
+  跨源 JOIN                 → v1 用 Pipeline + Spark
+  库+文件+Iceberg 一个 conf → 不支持，拆多步
+  CDC / 流式 / Kafka        → v1 不做
+
+
+================================================================================
+十四、常见场景
+================================================================================
+
+  单表全量复制     → 单步 TABLE_COPY
+  单表字段 mapping → 单步 COLUMN_MAP
+  同库 UNION       → 单步 TABLE_UNION
+  同库 JOIN        → 单步 TABLE_JOIN
+  异库单表复制     → 单步 TABLE_COPY（双 JDBC）
+  异库 UNION       → Pipeline LOAD + LOAD + SPARK
+  多介质各写一表   → Pipeline LOAD × N
+
+
+================================================================================
+十五、审批和执行
+================================================================================
+
+审批页顺序：
+  1. 解析轨迹（L1 系统 → L2 表 → L3 类型 → L4 SQL）
+  2. 完整计划和 SQL
+  3. conf（默认折叠）
+
+v1：
+  整包审批一次
+  按 dependsOn 顺序跑，LOAD 默认不并行
+  某步失败整单 FAILED，可从失败步重跑，不用重跑 LLM
+  spark.enabled=false 时有 SPARK 步就澄清拒绝
+
+
+================================================================================
+十六、校验
+================================================================================
+
+  L1：ref 在 Agent 授权 Catalog 里
+  L2：object 在该 ref 对象索引里
+  L3：syncKind 和 others 数量对；Pipeline 依赖不成环
+  L4：SQL 和 syncKind 一致；禁止 DROP/TRUNCATE/DDL；能 EXPLAIN 就 EXPLAIN
+  汇总：ref、object 不能空
+  EXPLAIN 用只读账号，写入用受限账号
+
+
+================================================================================
+十七、配置（application.yml）
+================================================================================
+
+spring.ai.alibaba.data-agent.seatunnel 下：
+
+  default-job-mode: BATCH
+  default-parallelism: 1
+  enabled-sync-kinds: TABLE_COPY, COLUMN_MAP, TABLE_JOIN, TABLE_UNION
+  resolve.catalog-topk: 10
+  resolve.object-index-topk: 8
+  resolve.fast-path-enabled: true
+  spark.enabled: false
+  spark.executor-type: cli
+
+L1/L2 混合检索（与 seatunnel 同级，在 vector-store 下）：
+
+  spring.ai.vectorstore.type: elasticsearch          # 混合检索需要 ES 后端
+  spring.ai.alibaba.data-agent.vector-store.enable-hybrid-search: true
+  spring.ai.alibaba.data-agent.vector-store.elasticsearch-min-score: 0.5
+
+
+================================================================================
+十八、和现有代码啥关系
+================================================================================
+
+接着用：
+  LlmService、审批、Gateway、AgentVectorStoreService、DynamicFilterService
+  SeatunnelSchemaRecallService → M3 并入 SyncObjectIndexService
+
+废弃：
+  SeatunnelConfGenerateService（LLM 吐 conf）
+  一次 RAG 全召回 → LLM 直接出 conf
+  扁平 sourceTable + targetTable DTO
+
+演进：
+  SeatunnelConfigBuilder → TableCopyCompiler
+  SeatunnelConfPostProcessor → 多 ref 填密码
+
+别纳入：《普通数据同步任务》、TableSyncService 测试链路
+
+  老（禁止）：llmOutput → 从里面抠 HOCON
+  新（目标）：plan = syncOrchestrator.resolve(...) → compiler.compile(plan)
+
+
+================================================================================
+十九、数据模型（Java）
+================================================================================
+
+包：com.alibaba.cloud.ai.dataagent.dto.syncjob
+
+  LlmSystemResolve、LlmObjectResolve、LlmSyncIntent、LlmSyncSql  — 每层 DTO
+  DataPointer  — ref + object 成对，别拆成 sourceRef + sourceTable
+  LlmSyncTask / LlmSyncPipeline  — 最终计划，schemaVersion: "1.0"
+  ResolveTrace  — 每层快照；Pipeline 的 stepObjects 按 stepId 存
+
+  SyncKind: TABLE_COPY, COLUMN_MAP, TABLE_JOIN, TABLE_UNION
+  PipelineAction: LOAD, SPARK
+  WriteMode: APPEND, OVERWRITE
+  ResolvePhase: SYSTEM, OBJECT, INTENT, SQL
+
+syncKind 和 SQL：
+  TABLE_COPY   source+sink，sql 可空（Java 补 SELECT *）
+  COLUMN_MAP   sql 必填
+  TABLE_JOIN   source+sink+others，sql 要有 JOIN
+  TABLE_UNION  source+sink+others，sql 要有 UNION
+  禁止从 SQL 反推 syncKind
+
+L1 结束后 Java 拼「ref 有值、object 空」的 DataPointer 再进 L2。
+SyncPlanAssembler：校验过了才汇总；needClarify 不写 sync_plan、不编译。
+Compiler 只读最终 plan，不读 ResolveTrace 中间字段。
+
+
+================================================================================
+二十、怎么扩展
+================================================================================
+
+加单步类型：SyncKind + SingleStepCompiler + Prompt 示例 + 配置白名单
+加数据源：Catalog 注册 ref + Compiler 加 Connector 分支，不改分层 DTO
+加 Pipeline 步：优先 LOAD+SPARK，不够再扩 PipelineStepSkeleton
+
+别干：
+  一个 Prompt 塞全部库表列
+  LLM 写 conf 或连接串
+  Java 从 SQL 反推 syncKind
+  跳过校验
+  Pipeline 只存一份 L2 快照
+  同步挂回 16 节点 Graph
+
+
+================================================================================
+二十一、测试和里程碑
+================================================================================
+
+测试：
+  单测 Validator、Compiler、Assembler
+  golden JSON 回归，MR 不跑真 LLM
+  集成：单步 COPY、单步 JOIN、Pipeline 三步
+  真 LLM 放 nightly
+
+里程碑（每步都要 plan → conf → 能审批或 Mock 执行）：
+
+  M0  Orchestrator + Catalog Mock + TableCopyCompiler
+  M1  单步 TABLE_COPY 闭环 + Fast Path
+  M2  COLUMN_MAP + JOIN + ResolveTrace + 审批页
+  M3  真 Catalog + 对象索引（JDBC + S3 file/file_column）+ L1/L2 校验
+  M4  Pipeline 只有 LOAD
+  M5  加 SPARK + 按依赖执行
+  M6  多 Connector + 评测
+
+别走偏：
+  M1 没通就做 Spark → 先 COPY 端到端
+  简单任务也调四层 LLM → Fast Path
+  又让 LLM 写 conf → 只改 Compiler
+  Catalog 没做 mock 表名 → L2 幻觉
+  两个 ref 一律 Pipeline → 异库单表复制是单步
+
+
+================================================================================
+二十二、JSON 示例
+================================================================================
+
+--- L1 ---
+
+{
+  "phase": "SYSTEM",
+  "sourceRef": "ds_mysql_orders",
+  "targetRef": "ds_mysql_orders"
+}
+
+--- L2 ---
+
+{
+  "phase": "OBJECT",
+  "source": { "ref": "ds_mysql_orders", "object": "order_items" },
+  "sink":   { "ref": "ds_mysql_orders", "object": "order_items_back" },
+  "others": [{ "ref": "ds_mysql_orders", "object": "products" }]
+}
+
+--- 单步 JOIN 计划 ---
+
+{
+  "schemaVersion": "1.0",
+  "syncKind": "TABLE_JOIN",
+  "source": { "ref": "ds_mysql_orders", "object": "order_items" },
+  "sink":   { "ref": "ds_mysql_orders", "object": "order_detail_summary" },
+  "others": [{ "ref": "ds_mysql_orders", "object": "products" }],
+  "sql": "SELECT oi.id AS item_id, p.name AS product_name FROM order_items oi JOIN products p ON oi.product_id = p.id"
+}
+
+--- Pipeline 计划 ---
+
+{
+  "schemaVersion": "1.0",
+  "description": "两库订单合并",
+  "steps": [
+    {
+      "stepId": 1, "action": "LOAD",
+      "from": { "ref": "ds_mysql_a", "object": "orders_a" },
+      "to":   { "ref": "ds_ods", "object": "stg_orders_a" },
+      "sql": "SELECT order_id AS id, amount AS total FROM orders_a"
+    },
+    {
+      "stepId": 2, "action": "LOAD",
+      "from": { "ref": "ds_mysql_b", "object": "orders_b" },
+      "to":   { "ref": "ds_ods", "object": "stg_orders_b" },
+      "sql": "SELECT offline_id AS id, pay_amount AS total FROM orders_b"
+    },
+    {
+      "stepId": 3, "action": "SPARK",
+      "to": { "ref": "ds_dw", "object": "order_all" },
+      "dependsOn": [1, 2],
+      "sql": "INSERT OVERWRITE TABLE dw.order_all SELECT id, total FROM ods.stg_orders_a UNION ALL SELECT id, total FROM ods.stg_orders_b"
+    }
+  ]
+}
+
+--- ResolveTrace（stepObjects 按步存）---
+
+{
+  "system": { "phase": "SYSTEM", "sourceRef": "ds_mysql_a", "targetRef": "ds_dw" },
+  "stepObjects": {
+    "1": {
+      "phase": "OBJECT",
+      "source": { "ref": "ds_mysql_a", "object": "orders_a" },
+      "sink":   { "ref": "ds_ods", "object": "stg_orders_a" }
+    },
+    "2": {
+      "phase": "OBJECT",
+      "source": { "ref": "ds_mysql_b", "object": "orders_b" },
+      "sink":   { "ref": "ds_ods", "object": "stg_orders_b" }
+    }
+  },
+  "intent": { "phase": "INTENT", "mode": "pipeline", "steps": [] },
+  "sqls": [
+    { "phase": "SQL", "scope": "step:1", "sql": "SELECT ..." },
+    { "phase": "SQL", "scope": "spark:3", "sql": "INSERT OVERWRITE ..." }
+  ]
+}
+
+
+================================================================================
+二十三、其它文档
+================================================================================
+
+  docs/ARCHITECTURE.md
+  docs/DEVELOPER_GUIDE.md
+  docs/SYNC_JOB_LLM_SPEC.md              早期规格，仅供参考
+  docs/SEATUNNEL_REFACTOR_PLAN.md        早期计划，仅供参考
+  docs/SEATUNNEL_SYNC_MILESTONE_CLASS_PLAN.md   里程碑与类规划
+
+Prompt 模板：prompts/sync/（L1-catalog.txt … L4-sql.txt）
+
+================================================================================
+  完
+================================================================================
